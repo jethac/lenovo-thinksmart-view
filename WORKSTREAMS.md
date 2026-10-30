@@ -8,7 +8,7 @@ Parallel lines of work on the ThinkSmart View after the first Linux 7.3 boot. Ea
 | `cpufreq` | CPU frequency scaling (`Failed to set OPP config`), speed bin, CPR, thermal zones and policy | `patches-wip/cpufreq/`, `02xx` | none |
 | `speaker` | TAS5782M driver with Lenovo's DSP register patch, ASoC routing, PipeWire/UCM, safe volume | `patches-wip/speaker/`, `03xx` | none |
 | `camera` | S5KC505A: reverse engineering of the vendor library, CAMSS/CCI board nodes, sensor driver, libcamera | `patches-wip/camera/`, `04xx` | none to start |
-| `stage-b` | Repartition for Omarchy (`devices/storage-emmc`), then Omarchy via `omarchy-arm` | none expected | `wifi` (needs internet); user approval before any partition-table write |
+| `stage-b` | Repartition so root grows to about 6.7 GiB for the speech models (`devices/storage-emmc`). Omarchy is dropped (see `GOAL.md`) | none expected | user approval before any partition-table write |
 | `idle-rotate` | Gravity-following ai& idle screen (`rootfs/scripts/idle-rotate/`) | none | none |
 | `asr` | On-device speech recognition: Qwen3-ASR-0.6B (transcribe.cpp GGUF) and lighter baselines (sherpa-onnx, SenseVoice, Moonshine, whisper.cpp); GPU feasibility; benchmarks | none expected | `cpufreq` for final numbers; `stage-b` for storage |
 
