@@ -1,0 +1,229 @@
+#!/bin/bash
+# USB gadget for the ThinkSmart View: CDC NCM network (device side
+# 172.16.42.1/24), a CDC ACM serial port with a login getty (ttyGS0) and, when
+# /opt/adbd is installed, an adb FunctionFS function (ffs.adb) served by
+# tsv-adbd.service. Runs from tsv-usb-gadget.service. Independent of
+# NetworkManager and Wi-Fi.
+#
+#   tsv-usb-gadget run|start   set up, bind, then supervise the binding (does not return)
+#   tsv-usb-gadget stop        unbind the UDC
+#   tsv-usb-gadget setup       create the configfs tree and mount FunctionFS (idempotent)
+#   tsv-usb-gadget wait-ffs    wait until FunctionFS is mounted (tsv-adbd ExecStartPre)
+#
+# adb never gates NCM/ACM. The gadget is bound with adb only while adbd has
+# written its descriptors (ep1/ep2 exist). When adbd closes FunctionFS
+# (restart, crash, host disconnect) the kernel unbinds the whole gadget
+# (f_fs.c ffs_closed -> unregister_gadget_item); the supervisor loop rebinds
+# within about a second, with adb if adbd is back, else NCM + ACM alone.
+set -u
+
+G=/sys/kernel/config/usb_gadget/tsv
+C=$G/configs/c.1
+FFS=/dev/usb-ffs/adb
+ADBD=/opt/adbd/bin/adbd
+ADDR=172.16.42.1/24
+BOOT_ADB_WAIT=10     # s: first bind waits this long for adbd (only if tsv-adbd is enabled)
+REBIND_ADB_WAIT=2    # s: after the kernel unbinds us, wait this long for adbd to come back
+FLAP_LIMIT=3         # adb binds that die within FLAP_SECS before adb is held off
+FLAP_SECS=5
+HOLDOFF_SECS=60
+log() { echo "tsv-usb-gadget: $*"; }
+
+stable_id() {
+    # Prefer the SoC serial (stable across reflashes), else machine-id.
+    local s=""
+    [[ -r /sys/devices/soc0/serial_number ]] && s=$(cat /sys/devices/soc0/serial_number 2>/dev/null)
+    [[ -n $s && $s != 0 ]] || s=$(cat /etc/machine-id 2>/dev/null)
+    [[ -n $s ]] || s=thinksmart
+    echo "$s"
+}
+
+mac_from() { # $1 = salt; locally administered unicast
+    local h
+    h=$(printf '%s-%s' "$(stable_id)" "$1" | sha256sum | cut -c1-10)
+    printf '02:%s:%s:%s:%s:%s\n' "${h:0:2}" "${h:2:2}" "${h:4:2}" "${h:6:2}" "${h:8:2}"
+}
+
+have_adb() { [[ -x $ADBD && -d $G/functions/ffs.adb ]]; }
+adb_ready() { [[ -e $FFS/ep1 && -e $FFS/ep2 ]]; }
+adb_linked() { [[ -L $C/ffs.adb ]]; }
+bound() { local u=""; read -r u < "$G/UDC" 2>/dev/null; [[ -n $u ]]; }
+first_udc() { local u; for u in /sys/class/udc/*; do [[ -e $u ]] && { echo "${u##*/}"; return 0; }; done; return 1; }
+
+setup() {
+    mountpoint -q /sys/kernel/config || mount -t configfs configfs /sys/kernel/config || true
+    modprobe -q libcomposite 2>/dev/null || true
+
+    if [[ ! -d $G ]]; then
+        mkdir -p "$G" || return 1
+        cd "$G" || return 1
+        echo 0x1d6b > idVendor    # Linux Foundation
+        echo 0x0104 > idProduct   # Multifunction Composite Gadget
+        echo 0x0100 > bcdDevice
+        echo 0x0200 > bcdUSB
+        echo 0xEF > bDeviceClass  # misc / IAD, needed for composite NCM + ACM
+        echo 0x02 > bDeviceSubClass
+        echo 0x01 > bDeviceProtocol
+        mkdir -p strings/0x409
+        echo "Arch Linux ARM" > strings/0x409/manufacturer
+        echo "ThinkSmart View (thinksmart)" > strings/0x409/product
+        stable_id | sha256sum | cut -c1-16 > strings/0x409/serialnumber
+
+        mkdir -p functions/ncm.usb0
+        mac_from host > functions/ncm.usb0/host_addr
+        mac_from dev > functions/ncm.usb0/dev_addr
+        mkdir -p functions/acm.GS0
+
+        mkdir -p configs/c.1/strings/0x409
+        echo "NCM network + ACM serial (+ adb)" > configs/c.1/strings/0x409/configuration
+        echo 0xC0 > configs/c.1/bmAttributes   # self powered (barrel jack)
+        echo 2 > configs/c.1/MaxPower
+        # NCM and ACM first and always; ffs.adb is linked last, only while adbd
+        # is ready, so NCM/ACM interface numbers never change.
+        ln -s functions/ncm.usb0 configs/c.1/
+        ln -s functions/acm.GS0 configs/c.1/
+        cd / || true
+    fi
+
+    # adb: FunctionFS instance "adb", mounted where adbd expects it
+    # (USB_FFS_ADB_EP0 = /dev/usb-ffs/adb/ep0).
+    if [[ -x $ADBD ]]; then
+        mkdir -p "$G/functions/ffs.adb" 2>/dev/null || log "cannot create ffs.adb (no CONFIG_USB_CONFIGFS_F_FS?)"
+        if [[ -d $G/functions/ffs.adb ]] && ! mountpoint -q "$FFS"; then
+            mkdir -p "$FFS"
+            mount -t functionfs adb "$FFS" || log "mounting FunctionFS on $FFS failed"
+        fi
+    fi
+    return 0
+}
+
+unbind() { bound && { echo "" > "$G/UDC" 2>/dev/null || true; }; return 0; }
+
+ADB_ON=0 ADB_BOUND_AT=0 ADB_FLAPS=0 ADB_HOLD_UNTIL=0 BIND_FAILED_AT=-100
+
+# Bind to $UDC: with adb if adbd is ready and not held off, otherwise (or if
+# that bind fails) NCM + ACM only. Never leaves the gadget unbound if it can
+# be bound at all.
+bind_gadget() {
+    unbind
+    if have_adb && adb_ready && (( SECONDS >= ADB_HOLD_UNTIL )); then
+        adb_linked || ln -s "$G/functions/ffs.adb" "$C/ffs.adb" 2>/dev/null
+        if adb_linked && echo "$UDC" > "$G/UDC" 2>/dev/null; then
+            ADB_ON=1 ADB_BOUND_AT=$SECONDS
+            log "bound to $UDC: NCM + ACM + adb"
+            return 0
+        fi
+        log "binding with adb failed; falling back to NCM + ACM"
+        unbind
+    fi
+    adb_linked && rm -f "$C/ffs.adb"
+    ADB_ON=0
+    if echo "$UDC" > "$G/UDC" 2>/dev/null; then
+        log "bound to $UDC: NCM + ACM"
+        return 0
+    fi
+    log "binding to $UDC failed"
+    BIND_FAILED_AT=$SECONDS
+    return 1
+}
+
+net_up() {
+    local ifn
+    udevadm settle -t 5 2>/dev/null || true
+    ifn=$(cat "$G/functions/ncm.usb0/ifname" 2>/dev/null)
+    [[ -n $ifn && -d /sys/class/net/$ifn ]] || ifn=usb0
+    ip link set "$ifn" up 2>/dev/null
+    ip addr replace "$ADDR" dev "$ifn" 2>/dev/null && log "$ifn up at $ADDR"
+}
+
+adb_expected() { have_adb && systemctl -q is-enabled tsv-adbd.service 2>/dev/null; }
+
+wait_adb() { # $1 = seconds
+    local i
+    for ((i = 0; i < $1 * 5; i++)); do adb_ready && return 0; sleep 0.2; done
+    return 1
+}
+
+run() {
+    setup || return 1
+
+    # The DWC3 UDC can appear late (deferred probe); wait up to 120 s.
+    local i
+    UDC=""
+    for ((i = 0; i < 240; i++)); do
+        UDC=$(first_udc) && break
+        sleep 0.5
+    done
+    if [[ -z $UDC ]]; then
+        log "no USB device controller found"
+        return 1
+    fi
+
+    if bound; then
+        log "already bound to $(cat "$G/UDC")"
+        adb_linked && ADB_ON=1 ADB_BOUND_AT=$SECONDS
+    else
+        # First bind: give adbd a few seconds so the host enumerates once with
+        # all three functions. If it is not there by then, bind without it.
+        if adb_expected && ! adb_ready; then
+            wait_adb "$BOOT_ADB_WAIT" || log "adbd not ready after ${BOOT_ADB_WAIT}s; binding without adb for now"
+        fi
+        bind_gadget
+    fi
+    net_up
+    systemctl --no-block start serial-getty@ttyGS0.service 2>/dev/null || true
+
+    # Supervise. Only bash builtins and sleep in the idle path.
+    while sleep 1; do
+        if ! bound; then
+            # A bind that failed outright is retried every 10 s, not every second.
+            (( SECONDS - BIND_FAILED_AT < 10 )) && continue
+            if (( ADB_ON )); then
+                if (( SECONDS - ADB_BOUND_AT < FLAP_SECS )); then
+                    ADB_FLAPS=$((ADB_FLAPS + 1))
+                    if (( ADB_FLAPS >= FLAP_LIMIT )); then
+                        log "adb keeps dropping the gadget; holding adb off for ${HOLDOFF_SECS}s"
+                        ADB_HOLD_UNTIL=$((SECONDS + HOLDOFF_SECS)) ADB_FLAPS=0
+                    fi
+                else
+                    ADB_FLAPS=0
+                fi
+                log "gadget was unbound (adbd closed FunctionFS); rebinding"
+                (( SECONDS >= ADB_HOLD_UNTIL )) && wait_adb "$REBIND_ADB_WAIT"
+            else
+                log "gadget was unbound; rebinding"
+            fi
+            UDC=$(first_udc) || continue
+            bind_gadget && net_up
+        elif (( ! ADB_ON )) && have_adb && adb_ready && (( SECONDS >= ADB_HOLD_UNTIL )); then
+            # adbd came up after we bound without it: re-enumerate with adb.
+            sleep 0.3
+            adb_ready || continue
+            log "adbd is ready; rebinding with adb"
+            bind_gadget && net_up
+        fi
+    done
+}
+
+stop() {
+    [[ -d $G ]] || return 0
+    echo "" > "$G/UDC" 2>/dev/null || true
+}
+
+wait_ffs() {
+    local i
+    for ((i = 0; i < 300; i++)); do
+        mountpoint -q "$FFS" && return 0
+        sleep 0.2
+    done
+    log "FunctionFS not mounted on $FFS after 60 s"
+    return 1
+}
+
+case "${1:-run}" in
+    run | start) run ;;
+    stop) stop ;;
+    setup) setup ;;
+    wait-ffs) wait_ffs ;;
+    *) echo "usage: $0 run|stop|setup|wait-ffs"; exit 2 ;;
+esac

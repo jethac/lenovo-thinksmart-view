@@ -1,0 +1,13 @@
+#!/bin/bash
+build() {
+    add_binary losetup
+    add_binary blkid
+    add_runscript
+}
+help() {
+    cat <<HELPEOF
+Maps the MBR-partitioned image inside a GPT partition (default
+PARTLABEL=system, override with tsv_subpart=<device spec>) with losetup -P so
+its partitions (boot, root) appear as /dev/loopNpM before root is mounted.
+HELPEOF
+}

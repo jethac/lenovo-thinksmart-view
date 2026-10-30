@@ -1,0 +1,31 @@
+[Unit]
+Description=ai& idle screen, kept upright by the accelerometer (until a desktop exists)
+Documentation=file:/usr/local/sbin/tsv-idle-screen
+# Started by udev when fb0 appears (/etc/udev/rules.d/90-tsv-idle-screen.rules),
+# so it waits for nothing and holds up nothing when the panel never probes.
+ConditionPathExists=/dev/fb0
+# Hand-over: once a display manager is enabled (Omarchy enables one as
+# display-manager.service), this never starts again. Conflicts= is not used:
+# a late udev-triggered start would then stop the display manager.
+ConditionPathExists=!/etc/systemd/system/display-manager.service
+# After Plymouth has let go of the display (it holds DRM master until then).
+After=plymouth-quit.service plymouth-quit-wait.service systemd-user-sessions.service
+Before=display-manager.service
+# At shutdown, stop (and give back DRM) before the shutdown splash starts.
+After=plymouth-reboot.service plymouth-poweroff.service plymouth-halt.service plymouth-kexec.service
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+# start: fbcon off, static frame on fb0, backlight. run: tsv-idle-rotate (DRM/KMS,
+# holds DRM master only while the logo is turning). If that exits 0 (no KMS, no
+# sensor, another DRM master), the unit stays active with the static frame.
+Type=exec
+RemainAfterExit=yes
+ExecStartPre=/usr/local/sbin/tsv-idle-screen start
+ExecStart=/usr/local/sbin/tsv-idle-screen run
+ExecStop=/usr/local/sbin/tsv-idle-screen stop $MAINPID
+Restart=on-failure
+RestartSec=3
+TimeoutSec=30
+Nice=5

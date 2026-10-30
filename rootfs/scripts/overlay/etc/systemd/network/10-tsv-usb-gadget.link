@@ -1,0 +1,8 @@
+# Keep the kernel name (usb0) for the gadget NCM interface so the static
+# address and DHCP server config can name it. Applied by udev, not networkd.
+[Match]
+OriginalName=usb*
+
+[Link]
+NamePolicy=keep kernel
+MACAddressPolicy=none

@@ -1,0 +1,11 @@
+[Unit]
+Description=Grow the root filesystem to fill the system partition (first boot)
+ConditionPathExists=!/var/lib/tsv/growroot.done
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/tsv-growroot
+
+[Install]
+WantedBy=multi-user.target

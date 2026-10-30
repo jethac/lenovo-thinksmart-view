@@ -1,0 +1,8 @@
+#!/bin/sh
+# Called by adbd for `adb reboot [ARG]` (patch 0003). ARG is passed to the
+# kernel as the reboot argument (e.g. "bootloader", "edl"), if any; whether the
+# boot chain honours it depends on the reboot-mode support of the device.
+if [ -n "$1" ]; then
+    exec /usr/bin/systemctl reboot --reboot-argument="$1"
+fi
+exec /usr/bin/systemctl reboot

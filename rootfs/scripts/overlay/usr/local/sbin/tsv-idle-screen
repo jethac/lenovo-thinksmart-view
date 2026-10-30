@@ -1,0 +1,157 @@
+#!/bin/bash
+# Idle screen for the ThinkSmart View before any desktop exists: the ai& wordmark,
+# white on black. The static frame goes straight to the fbdev framebuffer; then
+# tsv-idle-rotate takes over through DRM/KMS and keeps the wordmark upright by
+# the accelerometer (README "Boot splash and idle screen").
+#
+#   tsv-idle-screen start       unbind fbcon from the framebuffer, draw the static
+#                               frame, dim (ExecStartPre)
+#   tsv-idle-screen run         exec tsv-idle-rotate (ExecStart); without it, or with
+#                               IDLE_ROTATE=no, exit 0 and keep the static frame
+#   tsv-idle-screen stop [PID]  stop tsv-idle-rotate (PID), restore brightness,
+#                               rebind fbcon (text console back)
+#
+# Run by tsv-idle-screen.service. It never touches a tty: getty@tty1 keeps
+# running (invisibly, fbcon is unbound), and serial, SSH and adb are unaffected.
+# Every failure is logged and ends in exit 0, so it cannot fail boot.
+set -u
+FB=${TSV_IDLE_FB:-fb0}
+DIR=${TSV_IDLE_DIR:-/usr/share/tsv/idle-screen}
+STATE=${TSV_IDLE_STATE:-/run/tsv-idle-screen}
+SYS=${TSV_IDLE_SYSFS:-/sys}             # overridable for testing
+DEV=${TSV_IDLE_DEV:-/dev}
+# Testing overrides (TSV_IDLE_*): see README "Boot splash and idle screen".
+# Brightness while idle (raw WLED units, 0..4095). The PMI8950 WLED goes dark
+# below about 1200, so anything lower is raised to 1400. Empty = leave alone.
+IDLE_BRIGHTNESS=2000
+# Keep the wordmark upright with the accelerometer (tsv-idle-rotate); no = static.
+IDLE_ROTATE=yes
+ROTATE_BIN=${TSV_IDLE_ROTATE_BIN:-/usr/local/libexec/tsv-idle-rotate}
+[[ -r /etc/tsv/idle-screen.conf ]] && . /etc/tsv/idle-screen.conf
+MIN_BRIGHTNESS=1400
+
+log() { echo "tsv-idle-screen: $*"; }
+
+fbcon_vtcons() {
+    local v
+    for v in "$SYS"/class/vtconsole/vtcon*; do
+        [[ -r $v/name ]] && grep -q 'frame buffer' "$v/name" && echo "$v"
+    done
+}
+
+backlight() {
+    local b
+    for b in "$SYS"/class/backlight/*; do [[ -w $b/brightness ]] && { echo "$b"; return; }; done
+}
+
+draw() {
+    local s=$SYS/class/graphics/$FB w h bpp stride img row rowbytes tmp
+    IFS=, read -r w h < "$s/virtual_size" || return 1
+    read -r bpp < "$s/bits_per_pixel" || return 1
+    read -r stride < "$s/stride" 2>/dev/null || stride=$((w * bpp / 8))
+    case $bpp in
+        32) img=$DIR/idle-800x1280.xrgb8888.zst ;;
+        16) img=$DIR/idle-800x1280.rgb565.zst ;;
+        *) log "$FB is ${bpp} bpp; no image for that"; return 1 ;;
+    esac
+    # The visible mode is what matters; virtual_size can be taller (overalloc).
+    if [[ -r $s/modes ]]; then
+        local m; read -r m < "$s/modes"; m=${m#*:}; m=${m%%p*}; m=${m%%i*}
+        [[ $m == *x* ]] && { w=${m%x*}; h=${m#*x}; }
+    fi
+    if [[ $w != 800 || $h -lt 1280 ]]; then
+        log "$FB is ${w}x${h}, not 800x1280; leaving it black"
+        head -c $((stride * h)) /dev/zero > "$DEV/$FB" 2>/dev/null
+        return 1
+    fi
+    rowbytes=$((800 * bpp / 8))
+    if [[ $stride == "$rowbytes" ]]; then
+        zstd -dcq "$img" > "$DEV/$FB" || return 1
+    else
+        # Padded rows: copy row by row at the framebuffer's pitch.
+        tmp=$(mktemp "$STATE/raw.XXXXXX") || return 1
+        zstd -dcq "$img" > "$tmp" || { rm -f "$tmp"; return 1; }
+        for ((row = 0; row < 1280; row++)); do
+            dd if="$tmp" of="$DEV/$FB" bs="$rowbytes" count=1 skip=$row \
+                seek=$((row * stride)) oflag=seek_bytes conv=notrunc status=none || break
+        done
+        rm -f "$tmp"
+    fi
+    log "drew $img on $FB (${w}x${h}, ${bpp} bpp, pitch $stride)"
+}
+
+start() {
+    mkdir -p "$STATE"
+    if [[ ! -e $DEV/$FB ]]; then
+        log "no $DEV/$FB (display not up); nothing to do"
+        return 0
+    fi
+    # Unbind fbcon: the console moves to the dummy console, so kernel messages,
+    # the getty prompt and the cursor no longer draw over the image. The VTs,
+    # their gettys and /dev/console all stay.
+    local v
+    : > "$STATE/vtcons"
+    for v in $(fbcon_vtcons); do
+        if [[ $(cat "$v/bind") == 1 ]]; then
+            echo 0 > "$v/bind" 2>/dev/null && echo "$v" >> "$STATE/vtcons" ||
+                log "could not unbind $(cat "$v/name")"
+        fi
+    done
+    draw || log "could not draw the image"
+    local b; b=$(backlight)
+    if [[ -n $b && -n ${IDLE_BRIGHTNESS:-} ]]; then
+        local cur max want
+        read -r cur < "$b/brightness"; read -r max < "$b/max_brightness"
+        want=$IDLE_BRIGHTNESS
+        ((want < MIN_BRIGHTNESS)) && want=$MIN_BRIGHTNESS
+        ((want > max)) && want=$max
+        if ((cur == 0 || cur > want)); then
+            echo "$b $cur" > "$STATE/brightness"
+            echo "$want" > "$b/brightness" && log "backlight $(basename "$b"): $cur -> $want"
+        fi
+    fi
+    return 0
+}
+
+run() {
+    if [[ ${IDLE_ROTATE:-no} != yes ]]; then
+        log "IDLE_ROTATE=${IDLE_ROTATE:-} in /etc/tsv/idle-screen.conf; static frame only"
+        return 0
+    fi
+    if [[ ! -x $ROTATE_BIN ]]; then
+        log "no $ROTATE_BIN; static frame only"
+        return 0
+    fi
+    # Exits 0 on any setup failure (no KMS, no sensor), leaving the static frame.
+    exec "$ROTATE_BIN"
+}
+
+stop() {
+    local b cur v pid=${1:-} i
+    # Stop tsv-idle-rotate first: it puts fbdev's framebuffer back on screen.
+    if [[ $pid =~ ^[0-9]+$ ]] && kill -TERM "$pid" 2>/dev/null; then
+        for ((i = 0; i < 30; i++)); do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 0.1
+        done
+    fi
+    if [[ -r $STATE/brightness ]]; then
+        read -r b cur < "$STATE/brightness"
+        [[ -w $b/brightness ]] && echo "$cur" > "$b/brightness"
+    fi
+    if [[ -r $STATE/vtcons ]]; then
+        while read -r v; do
+            [[ -w $v/bind ]] && echo 1 > "$v/bind"
+        done < "$STATE/vtcons"
+    fi
+    rm -rf "$STATE"
+    return 0
+}
+
+case ${1:-} in
+    start) start ;;
+    run) run ;;
+    stop) stop "${2:-}" ;;
+    *) echo "usage: $0 start|run|stop [PID]" >&2; exit 2 ;;
+esac
+exit 0

@@ -1,0 +1,77 @@
+@@ -37,12 +37,13 @@
+ 	gpio-keys {
+ 		compatible = "gpio-keys";
+ 
+ 		camera-lens-cover {
+ 			label = "Camera Lens Cover";
+ 			gpios = <&tlmm 87 GPIO_ACTIVE_LOW>;
+ 			linux,code = <SW_CAMERA_LENS_COVER>;
+ 			linux,input-type = <EV_SW>;
+ 		};
+ 
+ 		/*
+-		 * There currently isn't a good way to model a binary microphone mute
+-		 * switch. It is a hardware mute switch though, so mics will be muted
+-		 * even though it is not reflected in UI.
++		 * There currently isn't a good way to model a binary microphone mute
++		 * switch. On this board the switch is not even fitted: measured
++		 * 2026-10-30 the only switch present is the lens cover above, and it
++		 * does not mute the microphones. Keep the node for other units.
+ 		 */
+ 		mic-mute-swtich {
+--- a/arch/arm64/boot/dts/qcom/apq8053-lenovo-cd-18781y.dts
++++ b/arch/arm64/boot/dts/qcom/apq8053-lenovo-cd-18781y.dts
+@@ -106,6 +106,8 @@
+ 			pinctrl-0 = <&alsp_int_default>;
+ 			pinctrl-names = "default";
+ 
++			vdd-supply = <&pm8953_l10>;
++			vddio-supply = <&pm8953_l6>;
+ 			/*
+ 			 * WARNING: Do not enable for now!
+ 			 * There's a chance that this can burn out the sensor's IR LED.
+@@ -196,7 +198,7 @@
+ 	status = "okay";
+ 
+ 	panel: panel@0 {
+-		compatible = "lenovo,cd-18781y-panel";
++		compatible = "lenovo,cd-18781y-ft8201";
+ 		reg = <0>;
+ 
+ 		pinctrl-names = "default", "sleep";
+@@ -280,6 +282,7 @@
+ 		pinctrl-names = "default", "sleep";
+ 
+ 		reset-gpios = <&tlmm 64 GPIO_ACTIVE_LOW>;
++		wakeup-source;
+ 
+ 		iovcc-supply = <&pm8953_l6>;
+ 		vcc-supply = <&pm8953_l10>;
+@@ -287,7 +290,7 @@
+ 		touchscreen-size-x = <800>;
+ 		touchscreen-size-y = <1280>;
+ 
+-		status = "disabled";
++		status = "okay";
+ 	};
+ 
+ 	hx83100a_ts: touchscreen@48 {
+@@ -351,6 +354,10 @@
+ 
+ &pmi8950_wled {
+ 	qcom,current-limit-microamp = <20000>;
++	/* stock: 980 mA boost limit, 29.5 V OVP, 4 strings */
++	qcom,current-boost-limit = <980>;
++	qcom,ovp-millivolt = <29500>;
++	qcom,enabled-strings = <0 1 2 3>;
+ 	qcom,external-pfet;
+ 
+ 	status = "okay";
+@@ -737,5 +744,7 @@
+ };
+ 
+ &usb3 {
++	/* No CC negotiation on this port; device mode is the strap default. */
++	dr_mode = "peripheral";
+ 	status = "okay";
+ };

@@ -1,0 +1,68 @@
+--- a/arch/arm64/boot/dts/qcom/apq8053-lenovo-cd-18781y.dts
++++ b/arch/arm64/boot/dts/qcom/apq8053-lenovo-cd-18781y.dts
+@@ -43,8 +43,9 @@
+ 
+ 		/*
+ 		 * There currently isn't a good way to model a binary microphone mute
+-		 * switch. It is a hardware mute switch though, so mics will be muted
+-		 * even though it is not reflected in UI.
++		 * switch. On some units it is a hardware mute switch. On HUA0BMNX it
++		 * is not fitted: the only switch present is the lens cover above, and
++		 * it does not mute the microphones (measured 2026-10-30).
+ 		 */
+ 		mic-mute-swtich {
+ 			label = "Mic Mute";
+@@ -98,6 +99,8 @@
+ 		light-sensor@51 {
+ 			compatible = "vishay,vcnl4200";
+ 			reg = <0x51>;
++			vdd-supply = <&pm8953_l10>;
++			vddio-supply = <&pm8953_l6>;
+ 
+ 			interrupt-parent = <&tlmm>;
+ 			interrupts = <43 IRQ_TYPE_EDGE_RISING>;
+@@ -196,7 +199,7 @@
+ 	status = "okay";
+ 
+ 	panel: panel@0 {
+-		compatible = "lenovo,cd-18781y-panel";
++		compatible = "lenovo,cd-18781y-ft8201";
+ 		reg = <0>;
+ 
+ 		pinctrl-names = "default", "sleep";
+@@ -285,7 +288,9 @@
+ 		touchscreen-size-x = <800>;
+ 		touchscreen-size-y = <1280>;
+ 
+-		status = "disabled";
++		wakeup-source;
++
++		status = "okay";
+ 	};
+ 
+ 	hx83100a_ts: touchscreen@48 {
+@@ -349,6 +354,15 @@
+ 	qcom,current-limit-microamp = <20000>;
+ 	qcom,external-pfet;
+ 
++	/*
++	 * Stock is 980 mA boost limit, 29.5 V OVP, strings 0-3. The PMI8950
++	 * tables in qcom-wled.c have 970 mA (not 980) and 29500 mV; both are
++	 * also the driver defaults. Pinned so a driver change cannot raise them.
++	 */
++	qcom,current-boost-limit = <970>;
++	qcom,ovp-millivolt = <29500>;
++	qcom,enabled-strings = <0 1 2 3>;
++
+ 	status = "okay";
+ };
+ 
+@@ -718,5 +732,8 @@
+ };
+ 
+ &usb3 {
++	/* No CC negotiation on this port; device mode is the strap default (GPIO 12, USB ID on GPIO 5). */
++	dr_mode = "peripheral";
++
+ 	status = "okay";
+ };

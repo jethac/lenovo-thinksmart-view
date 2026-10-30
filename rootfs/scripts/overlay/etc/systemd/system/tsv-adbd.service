@@ -1,0 +1,31 @@
+[Unit]
+Description=Android Debug Bridge daemon (adb over USB; key authentication; root shell)
+Documentation=file:/opt/adbd/BUILDINFO
+# Started early, beside the gadget, so the first USB enumeration already
+# includes adb. Nothing waits for it: if adbd fails, the gadget binds NCM + ACM
+# alone (tsv-usb-gadget) and boot carries on.
+DefaultDependencies=no
+After=tsv-usb-gadget.service local-fs.target systemd-journald.socket
+Wants=tsv-usb-gadget.service
+Conflicts=shutdown.target
+Before=shutdown.target
+
+[Service]
+# READY=1 comes from adbd (Debian's adbd-allow-notifying-systemd.patch).
+Type=notify
+NotifyAccess=main
+# Shown by `adb devices -l` (patch 0002; there is no Android property service).
+Environment=ADBD_PRODUCT_NAME=thinksmart ADBD_PRODUCT_MODEL=ThinkSmart_View ADBD_PRODUCT_DEVICE=cd-18781y
+Environment=HOME=/root
+# Optional. ADBD_PORT=5555 here turns on adb over TCP (all interfaces, same key
+# authentication). Absent by default, so adbd listens on USB only.
+EnvironmentFile=-/etc/adbd/adbd.env
+# FunctionFS is mounted by tsv-usb-gadget (setup step, before it waits for the UDC).
+ExecStartPre=/usr/local/sbin/tsv-usb-gadget wait-ffs
+ExecStart=/opt/adbd/bin/adbd
+Restart=always
+RestartSec=3
+# adbd is the root shell service for `adb shell`: deliberately not sandboxed.
+
+[Install]
+WantedBy=sysinit.target

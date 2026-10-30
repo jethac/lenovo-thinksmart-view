@@ -1,0 +1,4 @@
+# Kernel is not packaged; it lives on the ext2 boot partition (/boot).
+ALL_kver="7.3.0-g755ffc44d5d8"
+PRESETS=('default')
+default_image="/boot/initramfs-tsv.img"

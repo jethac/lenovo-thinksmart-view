@@ -1,0 +1,15 @@
+Subject: sysdeps/uio.h: include <limits.h> for IOV_MAX
+
+libstdc++ 16 headers no longer pull in <limits.h> through <algorithm>.
+ThinkSmart View image (lenovo-8), not upstream.
+
+--- a/packages/modules/adb/sysdeps/uio.h
++++ b/packages/modules/adb/sysdeps/uio.h
+@@ -34,6 +34,7 @@
+ 
+ #else
+ 
++#include <limits.h>
+ #include <sys/uio.h>
+ using adb_iovec = struct iovec;
+ inline ssize_t adb_writev(borrowed_fd fd, const adb_iovec* iov, int iovcnt) {

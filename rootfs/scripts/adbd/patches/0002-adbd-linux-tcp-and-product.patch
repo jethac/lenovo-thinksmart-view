@@ -1,0 +1,42 @@
+Subject: adbd: Linux: no implicit TCP listener, product strings from env
+
+On Linux, upstream adbd listens on tcp:5555 and vsock:5555 whenever
+FunctionFS is not available. Only listen on TCP when ADBD_PORT is set
+(or, for the old behaviour, ADBD_DEFAULT_TCP).
+There is no property service, so take ro.product.{name,model,device}
+(shown by `adb devices -l`) from ADBD_PRODUCT_{NAME,MODEL,DEVICE}.
+ThinkSmart View image (lenovo-8), not upstream.
+
+--- a/packages/modules/adb/daemon/main.cpp
++++ b/packages/modules/adb/daemon/main.cpp
+@@ -200,6 +200,18 @@
+ int adbd_main(int server_port) {
+     umask(0);
+ 
++#if !defined(__ANDROID__)
++    static const char* const product_env[][2] = {
++            {"ro.product.name", "ADBD_PRODUCT_NAME"},
++            {"ro.product.model", "ADBD_PRODUCT_MODEL"},
++            {"ro.product.device", "ADBD_PRODUCT_DEVICE"},
++    };
++    for (const auto& pe : product_env) {
++        const char* v = getenv(pe[1]);
++        if (v != nullptr && *v != 0) android::base::SetProperty(pe[0], v);
++    }
++#endif
++
+     signal(SIGPIPE, SIG_IGN);
+ 
+ #if defined(__BIONIC__)
+@@ -288,7 +300,11 @@
+             addrs.push_back(android::base::StringPrintf("tcp:%d", port));
+             addrs.push_back(android::base::StringPrintf("vsock:%d", port));
+             setup_adb(addrs);
++#if defined(__ANDROID__)
+         } else if (!is_usb) {
++#else
++        } else if (!is_usb && getenv("ADBD_DEFAULT_TCP") != nullptr) {
++#endif
+             // Listen on default port.
+             addrs.push_back(
+                     android::base::StringPrintf("tcp:%d", DEFAULT_ADB_LOCAL_TRANSPORT_PORT));

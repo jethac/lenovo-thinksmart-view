@@ -1,0 +1,9 @@
+[Plymouth Theme]
+Name=ai&
+Description=ai& wordmark, white on black, with a thin progress line.
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/aiand
+ScriptFile=/usr/share/plymouth/themes/aiand/aiand.script
+ConsoleLogBackgroundColor=0x000000

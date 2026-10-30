@@ -1,0 +1,82 @@
+# ai& boot splash (Plymouth script plugin). Black background, the wordmark
+# centred, a thin grey progress line underneath during boot.
+# logo.png is pre-rendered at 520 px wide (65 % of the 800 px panel) by
+# rootfs/scripts/render-logo.sh; it is only rescaled on a screen of another
+# width. The bar geometry matches render-logo.sh (preview-splash-800x1280.png).
+
+Window.SetBackgroundTopColor(0, 0, 0);
+Window.SetBackgroundBottomColor(0, 0, 0);
+
+screen_w = Window.GetWidth();
+screen_h = Window.GetHeight();
+
+logo.image = Image("logo.png");
+logo_w = Math.Int(screen_w * 0.65);
+if (logo_w != logo.image.GetWidth())
+  logo.image = logo.image.Scale(logo_w, Math.Int(logo.image.GetHeight() * logo_w / logo.image.GetWidth()));
+logo.sprite = Sprite(logo.image);
+logo.x = Math.Int((screen_w - logo.image.GetWidth()) / 2);
+logo.y = Math.Int((screen_h - logo.image.GetHeight()) / 2);
+logo.sprite.SetPosition(logo.x, logo.y, 1);
+
+# Progress line: 160x3 at 110 px below the wordmark (on an 800 px wide screen).
+bar.w = Math.Int(160 * screen_w / 800);
+bar.h = 3;
+bar.x = Math.Int((screen_w - bar.w) / 2);
+bar.y = logo.y + logo.image.GetHeight() + Math.Int(110 * screen_w / 800);
+bar.pixel = Image("bar.png");
+bar.track = Sprite(bar.pixel.Scale(bar.w, bar.h));
+bar.track.SetPosition(bar.x, bar.y, 2);
+bar.track.SetOpacity(0.20);
+bar.fill = Sprite();
+bar.fill.SetPosition(bar.x, bar.y, 3);
+bar.fill.SetOpacity(0.75);
+bar.shown_w = 0;
+
+# Only the boot splash has a progress line; shutdown and reboot show the
+# wordmark alone.
+if (Plymouth.GetMode() != "boot") {
+  bar.track.SetOpacity(0);
+  bar.fill.SetOpacity(0);
+}
+
+fun progress_callback(duration, progress) {
+  if (Plymouth.GetMode() != "boot") return;
+  w = Math.Int(bar.w * progress);
+  if (w > bar.w) w = bar.w;
+  if (w > bar.shown_w) {            # never move backwards
+    bar.shown_w = w;
+    bar.fill.SetImage(bar.pixel.Scale(w, bar.h));
+  }
+}
+Plymouth.SetBootProgressFunction(progress_callback);
+
+# Messages (for example from systemd-fsck) in small grey text under the bar.
+# Needs the label plugin; without it Image.Text returns nothing and no text is
+# drawn.
+message.sprite = Sprite();
+message.sprite.SetPosition(0, bar.y + 40, 4);
+fun message_callback(text) {
+  message.image = Image.Text(text, 0.6, 0.6, 0.6);
+  message.sprite.SetImage(message.image);
+  message.sprite.SetX(Math.Int((screen_w - message.image.GetWidth()) / 2));
+}
+Plymouth.SetMessageFunction(message_callback);
+
+# Password prompts (none are expected: no encrypted volumes). Show the prompt
+# and one dot per character so a prompt is never invisible.
+prompt.sprite = Sprite();
+prompt.sprite.SetPosition(0, bar.y + 80, 5);
+fun password_callback(text, bullets) {
+  s = text + "  ";
+  for (i = 0; i < bullets; i++) s = s + "*";
+  prompt.image = Image.Text(s, 1, 1, 1);
+  prompt.sprite.SetImage(prompt.image);
+  prompt.sprite.SetX(Math.Int((screen_w - prompt.image.GetWidth()) / 2));
+  prompt.sprite.SetOpacity(1);
+}
+fun normal_callback() {
+  prompt.sprite.SetOpacity(0);
+}
+Plymouth.SetDisplayPasswordFunction(password_callback);
+Plymouth.SetDisplayNormalFunction(normal_callback);

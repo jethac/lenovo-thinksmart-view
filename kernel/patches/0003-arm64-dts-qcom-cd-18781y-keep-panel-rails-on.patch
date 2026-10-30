@@ -1,0 +1,35 @@
+--- a/arch/arm64/boot/dts/qcom/apq8053-lenovo-cd-18781y.dts
++++ b/arch/arm64/boot/dts/qcom/apq8053-lenovo-cd-18781y.dts
+@@ -136,6 +136,14 @@
+ 		gpio = <&tlmm 100 GPIO_ACTIVE_HIGH>;
+ 		enable-active-high;
+ 		vin-supply = <&vph_pwr>;
++
++		/*
++		 * The generated panel drivers only request vsp/vsn, so nothing
++		 * consumes this rail and Linux would switch it off. Keep it on
++		 * until the driver requests avdd itself.
++		 */
++		regulator-boot-on;
++		regulator-always-on;
+ 	};
+ 
+ 	/* Speaker amp supplied from 20V DC input */
+@@ -596,6 +604,17 @@
+ };
+ 
+ &tlmm {
++	/*
++	 * Panel backlight enable (stock qcom,platform-bklight-en-gpio). The panel
++	 * driver ignores backlight-gpios, so hold it high until it handles it.
++	 */
++	panel-bl-en-hog {
++		gpio-hog;
++		gpios = <95 GPIO_ACTIVE_HIGH>;
++		output-high;
++		line-name = "panel-bl-en";
++	};
++
+ 	accel_int_default: accel-int-default-state {
+ 		pins = "gpio42";
+ 		function = "gpio";

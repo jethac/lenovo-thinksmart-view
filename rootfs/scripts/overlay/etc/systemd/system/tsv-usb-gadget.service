@@ -1,0 +1,22 @@
+[Unit]
+Description=USB gadget: NCM network (172.16.42.1), ACM serial console, adb
+DefaultDependencies=no
+After=sys-kernel-config.mount systemd-udevd.service systemd-modules-load.service
+Wants=sys-kernel-config.mount
+Before=network-pre.target sshd.service tsv-usb-dhcp.service
+Wants=network-pre.target
+Conflicts=shutdown.target
+Before=shutdown.target
+
+[Service]
+# Long-running: sets the gadget up, binds it, then keeps it bound (rebinds
+# after adbd restarts, which make the kernel unbind the gadget). Type=simple so
+# waiting for a late UDC never holds up boot.
+Type=simple
+ExecStart=/usr/local/sbin/tsv-usb-gadget run
+ExecStopPost=/usr/local/sbin/tsv-usb-gadget stop
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=sysinit.target

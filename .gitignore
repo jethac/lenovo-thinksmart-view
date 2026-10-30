@@ -1,0 +1,33 @@
+# Lenovo/Qualcomm firmware, device backups and anything extracted from them
+official-firmware/
+backup-*/
+flash-work/
+stock/
+devices/*/evidence/
+
+# Build outputs, work trees and downloads (re-created by the scripts)
+kernel/linux/
+kernel/linux-7.3/
+kernel/build/
+kernel/build-7.3/
+kernel/*.log
+rootfs/out*/
+rootfs/work*/
+rootfs/verify-tmp/
+rootfs/downloads/
+lk2nd/work/
+lk2nd/out/
+lk2nd/downloads/
+lk2nd/*.log
+
+# Separate repos and third-party tools
+ubuntu-thinksmart/
+tools/
+
+# Local-only
+*.partial
+*.tmp
+rootfs/*.log
+
+# Third-party profile notes, kept local
+JHB_REPORT.md

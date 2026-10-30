@@ -1,0 +1,18 @@
+#!/bin/bash
+# First boot: grow MBR partition 2 (root) of the image inside the GPT
+# 'system' partition to the end of that partition, then grow ext4 online.
+set -euo pipefail
+src=$(findmnt -no SOURCE /)              # e.g. /dev/loop0p2
+part=$(basename "$src")
+parent=/dev/$(basename "$(readlink -f "/sys/class/block/$part/..")")
+num=$(cat "/sys/class/block/$part/partition")
+echo "tsv-growroot: root $src is partition $num of $parent"
+before=$(blockdev --getsz "$src")
+# ',+' = keep start, extend to the largest possible size.
+echo ',+' | sfdisk --no-reread --no-tell-kernel -N "$num" "$parent"
+partx -u -n "$num" "$parent"
+resize2fs "$src"
+after=$(blockdev --getsz "$src")
+echo "tsv-growroot: $before -> $after sectors"
+mkdir -p /var/lib/tsv
+touch /var/lib/tsv/growroot.done

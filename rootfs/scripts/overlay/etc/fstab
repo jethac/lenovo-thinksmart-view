@@ -1,0 +1,5 @@
+# Both filesystems live inside the GPT 'system' partition, which carries its
+# own MBR. The initramfs (tsv-subpart hook) maps it with losetup -P, so they
+# appear as /dev/loop0p1 (boot, ext2, read by lk2nd) and /dev/loop0p2 (root).
+LABEL=tsv-root  /      ext4  rw,noatime,commit=30  0 1
+LABEL=tsv-boot  /boot  ext2  rw,noatime,nofail     0 2

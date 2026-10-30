@@ -1,0 +1,30 @@
+#!/usr/bin/ash
+# Linux does not scan partition tables nested inside a partition. lk2nd does
+# (it reads extlinux.conf from the ext2 sub-partition), so the kernel side has
+# to map the nested MBR itself: losetup -P on the GPT 'system' partition.
+run_hook() {
+    local spec dev loop i
+    spec=PARTLABEL=system
+    for i in $(cat /proc/cmdline); do
+        case "$i" in tsv_subpart=*) spec=${i#tsv_subpart=} ;; esac
+    done
+    [ "$spec" = none ] && return 0
+
+    msg ":: tsv-subpart: looking for $spec"
+    dev=$(resolve_device "$spec")
+    if [ -z "$dev" ] || [ ! -b "$dev" ]; then
+        err "tsv-subpart: $spec not found"
+        return 0
+    fi
+    if losetup -j "$dev" | grep -q .; then
+        msg ":: tsv-subpart: $dev already mapped"
+        return 0
+    fi
+    loop=$(losetup -f --show -P --direct-io=on "$dev" 2>/dev/null) ||
+        loop=$(losetup -f --show -P "$dev") || {
+            err "tsv-subpart: losetup failed on $dev"
+            return 0
+        }
+    msg ":: tsv-subpart: $dev -> $loop"
+    udevadm settle -t 10 2>/dev/null || true
+}

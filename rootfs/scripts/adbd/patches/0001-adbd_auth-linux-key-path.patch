@@ -1,0 +1,19 @@
+Subject: adbd_auth: read authorized keys from /etc/adbd/adb_keys on Linux
+
+The Android paths (/adb_keys, /data/misc/adb/adb_keys) do not fit a normal
+Linux filesystem layout. ThinkSmart View image (lenovo-8), not upstream.
+
+--- a/frameworks/native/libs/adbd_auth/adbd_auth.cpp
++++ b/frameworks/native/libs/adbd_auth/adbd_auth.cpp
+@@ -390,7 +390,11 @@
+         }
+     }
+ 
++#if defined(__ANDROID__)
+     static constexpr const char* key_paths[] = {"/adb_keys", "/data/misc/adb/adb_keys"};
++#else
++    static constexpr const char* key_paths[] = {"/etc/adbd/adb_keys"};
++#endif
+     void IteratePublicKeys(bool (*callback)(void*, const char*, size_t), void* opaque) {
+         for (const auto& path : key_paths) {
+             if (access(path, R_OK) == 0) {

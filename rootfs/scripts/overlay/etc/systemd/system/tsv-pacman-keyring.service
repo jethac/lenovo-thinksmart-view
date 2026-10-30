@@ -1,0 +1,12 @@
+[Unit]
+Description=Initialise the pacman keyring on first boot (keys are not shipped in the image)
+ConditionPathExists=!/etc/pacman.d/gnupg/trustdb.gpg
+After=time-sync.target local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/pacman-key --init
+ExecStart=/usr/bin/pacman-key --populate archlinuxarm
+
+[Install]
+WantedBy=multi-user.target

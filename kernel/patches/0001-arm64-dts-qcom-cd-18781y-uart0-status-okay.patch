@@ -1,0 +1,13 @@
+diff --git i/arch/arm64/boot/dts/qcom/apq8053-lenovo-cd-18781y.dts w/arch/arm64/boot/dts/qcom/apq8053-lenovo-cd-18781y.dts
+index bf7c2f221..3048819c0 100644
+--- i/arch/arm64/boot/dts/qcom/apq8053-lenovo-cd-18781y.dts
++++ w/arch/arm64/boot/dts/qcom/apq8053-lenovo-cd-18781y.dts
+@@ -714,7 +714,7 @@ &uart_0 {
+ 	pinctrl-names = "default";
+ 	pinctrl-0 = <&uart_console_active>;
+ 
+-	status = "enabled";
++	status = "okay";
+ };
+ 
+ &usb3 {

@@ -1,0 +1,35 @@
+Subject: adbd: Linux: reboot through a helper, TMPDIR=/tmp
+
+`adb reboot [arg]` runs /system/bin/reboot on Android. On Linux run
+/opt/adbd/libexec/adbd-reboot instead (systemctl reboot). Shells get
+TMPDIR=/tmp rather than the Android /data/local/tmp.
+ThinkSmart View image (lenovo-8), not upstream.
+
+--- a/packages/modules/adb/daemon/services.cpp
++++ b/packages/modules/adb/daemon/services.cpp
+@@ -157,7 +157,11 @@
+     }
+ #endif
+     // Fall through
++#if defined(__ANDROID__)
+     std::string cmd = "/system/bin/reboot ";
++#else
++    std::string cmd = "/opt/adbd/libexec/adbd-reboot ";
++#endif
+     cmd += name;
+     return StartSubprocess(cmd, nullptr, SubprocessType::kRaw, SubprocessProtocol::kNone);
+ }
+--- a/packages/modules/adb/daemon/shell_service.cpp
++++ b/packages/modules/adb/daemon/shell_service.cpp
+@@ -274,7 +274,11 @@
+         env["HOSTNAME"] = GetHostName();
+         env["LOGNAME"] = pw->pw_name;
+         env["SHELL"] = pw->pw_shell;
++#if defined(__ANDROID__)
+         env["TMPDIR"] = "/data/local/tmp";
++#else
++        env["TMPDIR"] = "/tmp";
++#endif
+         env["USER"] = pw->pw_name;
+     }
+ 
