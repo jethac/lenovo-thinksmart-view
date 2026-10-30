@@ -62,6 +62,10 @@ in_root "pacman -D --asexplicit mkinitcpio >/dev/null"
 in_root "$PAC -Rns linux-aarch64 \$(pacman -Qq | grep -E '^linux-firmware') netctl dhcpcd"
 # plymouth: ai& boot splash (theme in the overlay; see README "Boot splash and idle screen").
 in_root "$PAC -Syu --needed mkinitcpio networkmanager dnsmasq sudo wireless-regdb iw plymouth"
+# Audio (speaker through the ADSP and TAS5782M, microphones) and camera userspace:
+# PipeWire with WirePlumber and the ALSA UCM profiles the overlay adds to, plus the
+# ALSA and V4L2 command-line tools used to check them.
+in_root "$PAC -S --needed pipewire wireplumber alsa-ucm-conf alsa-utils v4l-utils"
 in_root "$PAC -Scc >/dev/null; rm -rf /var/cache/pacman/pkg/*"
 
 sed -i 's/^#CheckSpace-tsvbuild/CheckSpace/' "$R/etc/pacman.conf"
@@ -86,7 +90,7 @@ chown -R 0:0 "$R/etc/systemd" "$R/etc/NetworkManager" "$R/etc/ssh/sshd_config.d"
     "$R/etc/sudoers.d" "$R/etc/tsv" "$R/etc/initcpio" "$R/etc/mkinitcpio.d" \
     "$R/usr/local/sbin" "$R/usr/local/libexec" "$R/etc/hostname" "$R/etc/locale.conf" "$R/etc/vconsole.conf" \
     "$R/etc/fstab" "$R/etc/mkinitcpio.conf" "$R/etc/mkinitcpio.conf.d" "$R/etc/plymouth" "$R/etc/udev/rules.d" \
-    "$R/usr/share/plymouth/themes/aiand" "$R/usr/share/tsv"
+    "$R/usr/share/plymouth/themes/aiand" "$R/usr/share/tsv" "$R/etc/conf.d/wireless-regdom"
 chmod 0440 "$R/etc/sudoers.d/10-wheel"
 chmod 0700 "$R/etc/NetworkManager/system-connections"
 rm -f "$R/etc/NetworkManager/system-connections/.keep"
@@ -95,11 +99,13 @@ ln -sf /usr/share/zoneinfo/Asia/Tokyo "$R/etc/localtime"
 sed -i 's/^#\(en_US.UTF-8 UTF-8\)/\1/' "$R/etc/locale.gen"
 in_root "locale-gen >/dev/null"
 
-# Users: drop the stock alarm account, lock root, add jethac (wheel).
+# Users: drop the stock alarm account, lock root, add jethac (wheel; audio for the
+# speaker and microphones, video for DRM and the camera, input for buttons and
+# the lens switch: the device runs one app with no desktop session to grant them).
 in_root "userdel -r alarm 2>/dev/null || userdel alarm; rm -rf /home/alarm"
 # Replace the stock root:root hash entirely (not just a '!' prefix).
 in_root "usermod -p '!*' root"
-in_root "useradd -m -u 1000 -U -G wheel -s /bin/bash jethac"
+in_root "useradd -m -u 1000 -U -G wheel,audio,video,input -s /bin/bash jethac"
 if [[ -n ${TSV_JETHAC_HASH:-} ]]; then
     printf 'jethac:%s\n' "$TSV_JETHAC_HASH" | chroot "$R" /usr/bin/chpasswd -e
     echo "build-rootfs: jethac password set from TSV_JETHAC_PASSWORD (hash only)"

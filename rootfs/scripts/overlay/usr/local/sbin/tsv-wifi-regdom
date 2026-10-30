@@ -1,0 +1,29 @@
+#!/bin/bash
+# Apply WIRELESS_REGDOM from /etc/conf.d/wireless-regdom as a user regulatory
+# hint, after the Wi-Fi driver has made its own hint.
+#
+# Why not cfg80211's ieee80211_regdom= or wireless-regdb's udev rule (both act
+# when cfg80211 loads): the QCA9379 board data carries regdomain 0x0, so ath10k
+# hints "US" when it registers. A user "JP" made before that is intersected
+# with US, the phy keeps following its own US rules (ch 149-165 at 30 dBm), and
+# cfg80211 then ignores any later "iw reg set JP" because the intersected
+# domain no longer matches the last request. Made after the driver hint, the
+# user hint wins: the global domain becomes JP and the phy follows it.
+set -u
+unset WIRELESS_REGDOM
+. /etc/conf.d/wireless-regdom
+CC=${WIRELESS_REGDOM:-}
+[[ -n $CC ]] || exit 0
+global() { iw reg get | awk '/^global/{g=1; next} g && /^country/{sub(":", "", $2); print $2; exit}'; }
+for _ in $(seq 1 20); do
+    # A phy with its own regdomain is listed once the driver hint is processed.
+    iw reg get | grep -q '^phy#' && break
+    sleep 1
+done
+for try in 1 2 3; do
+    [[ $(global) == "$CC" ]] && { echo "regulatory domain $CC"; exit 0; }
+    iw reg set "$CC"
+    sleep 2
+done
+echo "regulatory domain is $(global), not $CC" >&2
+exit 1

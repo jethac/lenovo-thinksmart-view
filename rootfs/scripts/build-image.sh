@@ -57,6 +57,8 @@ echo "== 2/5 fetch, verify and cross-build adbd (Debian android-platform-tools)"
 
 echo "== 3/5 extract firmware from the device backup"
 "$HERE/extract-firmware.sh" "$BACKUP" "$WORK/partitions" "$WORK/firmware" "$WORK/firmware-manifest.tsv"
+# Speaker tuning for the TAS5782M, from Lenovo's GPL source (not the backup)
+"$HERE/fetch-tas5782m-tuning.sh" "$DL/lenovo-gpl" "$WORK/firmware" "$WORK/firmware-manifest.tsv"
 
 echo "== 4/5 root filesystem and image (user namespace)"
 if [[ -n ${TSV_JETHAC_PASSWORD:-} ]]; then

@@ -1,0 +1,5 @@
+# Set the regulatory domain from /etc/conf.d/wireless-regdom when a Wi-Fi phy
+# registers (also replayed by udev's coldplug trigger at boot). This replaces
+# wireless-regdb's 85-regulatory.rules, which fires when cfg80211 loads; that
+# is too early for ath10k (see /usr/local/sbin/tsv-wifi-regdom).
+ACTION=="add", SUBSYSTEM=="ieee80211", TAG+="systemd", ENV{SYSTEMD_WANTS}+="tsv-wifi-regdom.service"

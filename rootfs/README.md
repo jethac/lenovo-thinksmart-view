@@ -111,7 +111,9 @@ This is what that lk2nd does:
   - There is a preset at `/etc/mkinitcpio.d/tsv.preset`, so `mkinitcpio -P` on the device
     regenerates `/boot/initramfs-tsv.img`.
 - **System settings.** Hostname `thinksmart`, timezone `Asia/Tokyo`, `LANG=en_US.UTF-8`
-  (generated), keymap `us`. `cfg80211 ieee80211_regdom=JP`. `systemd-resolved` and
+  (generated), keymap `us`. Regulatory domain JP, applied by `tsv-wifi-regdom.service` when the
+  Wi-Fi phy registers (`/etc/conf.d/wireless-regdom`; a `cfg80211 ieee80211_regdom=JP`
+  option does not work here, because ath10k's US hint is intersected with it). `systemd-resolved` and
   `systemd-timesyncd` are enabled.
 - **Users:**
   - The stock `alarm` account is deleted.
@@ -182,9 +184,9 @@ Notes:
   - Version string: `WLAN.NPL.1.6-00163-QCANPLSWPZ-1`, from `verinfo/ver_info.txt`.
   - WMI and HTT op version: `tlv`.
   - OTP image included.
-  - Features: `wowlan,ignore-otp,mfp`. That is the set the working 6.19 port logged. Upstream
-    tests used `ignore-otp` alone, and linux-firmware's QCA9377 SDIO file has the same layout
-    with `ignore-otp` alone.
+  - Features: `wowlan,ignore-otp,mfp`, the set the working 6.19 port logged. ath10k loads it
+    on 7.3 (api 5, `board.bin`), and the chip's upstream author runs the same firmware with
+    the same features.
   - The timestamp is fixed, so the output is reproducible.
 - **Zap shader source.** The modem partition also carries a zap shader, `image/gfx.*`. Its
   `.mdt` and `.b01` (hash and signature) segments differ from `/vendor/firmware/a506_zap.*`,
@@ -416,6 +418,8 @@ before flashing:
 ```sh
 rootfs/scripts/inject-wifi.sh --ssid yareyare-xd-mesh --psk -     # reads the PSK from stdin
 # or: --psk 'the-psk'  (visible in ps while it runs); --image <img> for another file
+# --adb: install the profile on the running device instead (PSK over adb stdin, never on a
+#        command line). Profiles use the chip's permanent MAC (94:08:53:...), no randomisation.
 ```
 
 The script finds the `tsv-root` filesystem in the MBR and writes
@@ -682,13 +686,13 @@ Nothing below has been checked on hardware.
   whether the side port carries data, and whether Type-C CC detection matters. If DWC3 comes up
   in host mode, the role can be forced with
   `echo device > /sys/class/usb_role/*/role` (needs console access).
-- **Wi-Fi firmware container features.** `wowlan,ignore-otp,mfp` is an inference. If ath10k
-  fails, rebuild with `--features ignore-otp`, the upstream-tested set, or without
-  `--otp`.
 - **The BT file names.** `00150100` comes from upstream mailing-list text, not from this
   unit's controller.
-- The ath10k GTK rekey patch (milestone 6) is not carried; the kernel is used as built.
-- There is no zram or swap yet, and nothing from milestone 8 (sensors, audio UCM, daemons).
+- The ath10k GTK rekey fix is `kernel/patches/0101-*`; its rekey path is untested until the
+  device joins a network (`streams/wifi/NOTES.md` has the test list).
+- zram is built as a module but not configured yet (no swap). Speaker audio is in (UCM2 profile,
+  WirePlumber rule, the TAS5782M tuning built from Lenovo's GPL source at image build time);
+  microphone UCM, sensors daemons and echo cancellation are not.
 - **Hardcoded paths.** The initramfs preset and extlinux entry name the kernel version
   `7.3.0-g755ffc44d5d8`. Installing a new kernel means updating `/boot` (Image.gz, DTB),
   `/etc/mkinitcpio.d/tsv.preset`, and running `mkinitcpio -P`.

@@ -1,0 +1,59 @@
+From 97979c7a87e5aa21b45e897eba1d619efb0f2e1a Mon Sep 17 00:00:00 2001
+From: Jetha Chan <jethachan@gmail.com>
+Date: Fri, 30 Oct 2026 21:39:03 +0900
+Subject: [PATCH 303/303] arm64: dts: qcom: apq8053-lenovo-cd-18781y: fix the
+ TAS5782M node
+
+The amplifier is the codec of the quaternary MI2S link, fed digitally by
+the ADSP. It was also listed as an auxiliary device with a route from the
+WCD headphone output, which does not exist on this board; drop both.
+
+Drop pdn-gpios (GPIO 44): the vendor kernel never drives that pin, it
+reads low (input with pull-down) on the running stock system, and the
+amplifier answers on I2C with it low, so it is not the power-down input.
+mute-gpio (GPIO 0) and fault-gpio (GPIO 45) are not used by the vendor
+kernel either and use property names outside any binding; drop them.
+Name the node after its function.
+
+---
+ arch/arm64/boot/dts/qcom/apq8053-lenovo-cd-18781y.dts | 9 +--------
+ 1 file changed, 1 insertion(+), 8 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/qcom/apq8053-lenovo-cd-18781y.dts b/arch/arm64/boot/dts/qcom/apq8053-lenovo-cd-18781y.dts
+index f284fa7bc..98ab42407 100644
+--- a/arch/arm64/boot/dts/qcom/apq8053-lenovo-cd-18781y.dts
++++ b/arch/arm64/boot/dts/qcom/apq8053-lenovo-cd-18781y.dts
+@@ -331,14 +331,10 @@ &ibb {
+ &i2c_1 {
+ 	status = "okay";
+ 
+-	speaker_amp: tas5782m@49 {
++	speaker_amp: amplifier@49 {
+ 		compatible = "ti,tas5782m";
+ 		reg = <0x49>;
+ 
+-		pdn-gpios = <&tlmm 44 GPIO_ACTIVE_LOW>;
+-		/* The next two GPIOs are connected but unused by the driver */
+-		mute-gpio = <&tlmm 0 GPIO_ACTIVE_HIGH>;
+-		fault-gpio = <&tlmm 45 GPIO_ACTIVE_HIGH>;
+ 		pvdd-supply = <&speaker_amp_pvdd>;
+ 
+ 		sound-name-prefix = "Speaker Amp";
+@@ -465,14 +461,11 @@ &pri_mi2s_sleep
+ 
+ 	audio-routing =
+ 		"Speaker", "Speaker Amp OUT",
+-		"Speaker Amp DAC IN", "HPH_R",
+ 		"DMIC1", "MIC BIAS Internal1",
+ 		"DMIC1", "Digital Mic1",
+ 		"DMIC2", "MIC BIAS Internal1",
+ 		"DMIC2", "Digital Mic2";
+ 
+-	aux-devices = <&speaker_amp>;
+-
+ 	status = "okay";
+ 
+ 	quaternary-mi2s-dai-link {
+-- 
+2.56.0
+

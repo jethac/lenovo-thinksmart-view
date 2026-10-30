@@ -1,0 +1,4 @@
+# Regulatory domain for the Wi-Fi radio, applied by tsv-wifi-regdom.service
+# once the phy has registered (see /usr/local/sbin/tsv-wifi-regdom for why not
+# earlier). The ThinkSmart View lives in Japan.
+WIRELESS_REGDOM="JP"

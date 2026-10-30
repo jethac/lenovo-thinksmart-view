@@ -1,0 +1,795 @@
+From 35cccd777f910011e8b4dffbeb24a0027bf8db93 Mon Sep 17 00:00:00 2001
+From: Jetha Chan <jethachan@gmail.com>
+Date: Fri, 30 Oct 2026 21:39:03 +0900
+Subject: [PATCH 302/303] ASoC: codecs: add driver for TI TAS5782M
+
+Add a driver for the Texas Instruments TAS5782M stereo class-D amplifier
+with integrated DSP.
+
+The speaker tuning lives in the DSP's coefficient RAM and is written over
+I2C after every reset. It is product specific (TI PPC3 output for a given
+speaker and enclosure), so it is loaded as firmware rather than built
+into the driver: tas5782m_dsp_<name>.bin, a sequence of (register, value)
+byte pairs including book and page selects, in the format the tas5805m
+driver already uses. A coefficient table in the driver would tie a
+generic chip driver to one product and could not be updated without a
+kernel change.
+
+The device clocks itself from SCLK (PLL reference set by the
+configuration), so the configuration is written on the first unmute,
+when the I2S clocks are running, and kept across streams: later streams
+only leave standby. The sequence is the one the vendor driver uses:
+book 0 / page 0, standby and power down, module and register reset, a
+settling delay, then the configuration file with the outputs muted.
+Playback is refused if the configuration cannot be written, so the
+speaker is never driven without its protection.
+
+Mute is the soft mute in CTRL3 plus the DAC routing; on stop the driver
+mutes, waits for the volume ramp and enters standby. Volume is the
+digital volume after the DSP (0.5 dB steps), capped at 0 dB so it can
+only attenuate after the speaker protection. It starts at -30 dB.
+
+Only 48 kHz is accepted: the DSP configuration is computed for it.
+
+---
+ MAINTAINERS                 |   7 +
+ sound/soc/codecs/Kconfig    |  14 +
+ sound/soc/codecs/Makefile   |   2 +
+ sound/soc/codecs/tas5782m.c | 675 ++++++++++++++++++++++++++++++++++++
+ 4 files changed, 698 insertions(+)
+ create mode 100644 sound/soc/codecs/tas5782m.c
+
+diff --git a/MAINTAINERS b/MAINTAINERS
+index 2eb1b3141..63cd8c502 100644
+--- a/MAINTAINERS
++++ b/MAINTAINERS
+@@ -27045,6 +27045,13 @@ F:	sound/soc/codecs/tas675x*.*
+ F:	sound/soc/codecs/tlv320*.*
+ F:	sound/soc/codecs/tpa6130a2.*
+ 
++TEXAS INSTRUMENTS TAS5782M AMPLIFIER DRIVER
++M:	Jetha Chan <jethachan@gmail.com>
++L:	linux-sound@vger.kernel.org
++S:	Maintained
++F:	Documentation/devicetree/bindings/sound/ti,tas5782m.yaml
++F:	sound/soc/codecs/tas5782m.c
++
+ TEXAS INSTRUMENTS DMA DRIVERS
+ M:	Vignesh Raghavendra <vigneshr@ti.com>
+ L:	dmaengine@vger.kernel.org
+diff --git a/sound/soc/codecs/Kconfig b/sound/soc/codecs/Kconfig
+index 4b97798c8..fc0bb08b2 100644
+--- a/sound/soc/codecs/Kconfig
++++ b/sound/soc/codecs/Kconfig
+@@ -279,6 +279,7 @@ config SND_SOC_ALL_CODECS
+ 	imply SND_SOC_TAS5086
+ 	imply SND_SOC_TAS571X
+ 	imply SND_SOC_TAS5720
++	imply SND_SOC_TAS5782M
+ 	imply SND_SOC_TAS6424
+ 	imply SND_SOC_TAS675X
+ 	imply SND_SOC_TDA7419
+@@ -2271,6 +2272,19 @@ config SND_SOC_TAS5720
+ 	  Enable support for Texas Instruments TAS5720L/M high-efficiency mono
+ 	  Class-D audio power amplifiers.
+ 
++config SND_SOC_TAS5782M
++	tristate "Texas Instruments TAS5782M speaker amplifier"
++	depends on I2C
++	select REGMAP_I2C
++	help
++	  Enable support for the Texas Instruments TAS5782M stereo
++	  Class-D amplifier with an integrated DSP. The DSP
++	  configuration (speaker tuning) is loaded as firmware, named
++	  by a device-tree property.
++
++	  To compile this driver as a module, choose M here: the module
++	  will be called snd-soc-tas5782m.
++
+ config SND_SOC_TAS5805M
+ 	tristate "Texas Instruments TAS5805M speaker amplifier"
+ 	depends on I2C
+diff --git a/sound/soc/codecs/Makefile b/sound/soc/codecs/Makefile
+index 7395f6c12..0e476cb56 100644
+--- a/sound/soc/codecs/Makefile
++++ b/sound/soc/codecs/Makefile
+@@ -321,6 +321,7 @@ snd-soc-tac5xx2-sdw-y := tac5xx2-sdw.o
+ snd-soc-tas5086-y := tas5086.o
+ snd-soc-tas571x-y := tas571x.o
+ snd-soc-tas5720-y := tas5720.o
++snd-soc-tas5782m-y := tas5782m.o
+ snd-soc-tas5805m-y := tas5805m.o
+ snd-soc-tas6424-y := tas6424.o
+ snd-soc-tas675x-y := tas675x.o
+@@ -772,6 +773,7 @@ obj-$(CONFIG_SND_SOC_TAS2783_SDW)	+= snd-soc-tas2783-sdw.o
+ obj-$(CONFIG_SND_SOC_TAS5086)	+= snd-soc-tas5086.o
+ obj-$(CONFIG_SND_SOC_TAS571X)	+= snd-soc-tas571x.o
+ obj-$(CONFIG_SND_SOC_TAS5720)	+= snd-soc-tas5720.o
++obj-$(CONFIG_SND_SOC_TAS5782M)	+= snd-soc-tas5782m.o
+ obj-$(CONFIG_SND_SOC_TAS5805M)	+= snd-soc-tas5805m.o
+ obj-$(CONFIG_SND_SOC_TAS6424)	+= snd-soc-tas6424.o
+ obj-$(CONFIG_SND_SOC_TAS675X)	+= snd-soc-tas675x.o
+diff --git a/sound/soc/codecs/tas5782m.c b/sound/soc/codecs/tas5782m.c
+new file mode 100644
+index 000000000..d04e37871
+--- /dev/null
++++ b/sound/soc/codecs/tas5782m.c
+@@ -0,0 +1,675 @@
++// SPDX-License-Identifier: GPL-2.0
++//
++// Driver for the Texas Instruments TAS5782M class-D amplifier
++//
++// The TAS5782M is a stereo class-D amplifier with a digital audio input and
++// a DSP running one of its ROM process flows. Its speaker tuning (EQ,
++// limiter, excursion protection) is a set of DSP coefficients written over
++// I2C after every reset. These come from TI's PPC3 tool for each product,
++// so they are loaded as firmware, like on the TAS5805M: a sequence of
++// (register, value) byte pairs, book and page writes included.
++//
++// The structure follows the upstream tas5805m driver by Andy Liu and
++// Daniel Beer. The TAS5782M start-up sequence, its clocking from SCLK and
++// the register map differences from the TAS5805M come from Felix
++// Kaechele's TAS5782M support for that driver and from rickx's ThinkSmart
++// View port, both checked against Lenovo's GPL TAS5782M driver.
++
++#include <linux/delay.h>
++#include <linux/firmware.h>
++#include <linux/gpio/consumer.h>
++#include <linux/i2c.h>
++#include <linux/module.h>
++#include <linux/mutex.h>
++#include <linux/of.h>
++#include <linux/regmap.h>
++#include <linux/regulator/consumer.h>
++
++#include <sound/pcm.h>
++#include <sound/pcm_params.h>
++#include <sound/soc.h>
++#include <sound/tlv.h>
++
++/* Book 0, page 0 */
++#define TAS5782M_PAGE		0x00
++#define TAS5782M_RESET		0x01
++#define TAS5782M_RESET_MOD	BIT(4)
++#define TAS5782M_RESET_REG	BIT(0)
++#define TAS5782M_POWER		0x02
++#define TAS5782M_POWER_STANDBY	BIT(4)
++#define TAS5782M_POWER_PDOWN	BIT(0)
++#define TAS5782M_MUTE		0x03
++#define TAS5782M_MUTE_BOTH	0x11
++#define TAS5782M_I2S_1		0x28
++#define TAS5782M_I2S_AFMT_MASK	GENMASK(5, 4)
++#define TAS5782M_I2S_AFMT_I2S	(0 << 4)
++#define TAS5782M_I2S_AFMT_LJ	(3 << 4)
++#define TAS5782M_I2S_ALEN_MASK	GENMASK(1, 0)
++#define TAS5782M_I2S_ALEN_16	0
++#define TAS5782M_I2S_ALEN_20	1
++#define TAS5782M_I2S_ALEN_24	2
++#define TAS5782M_I2S_ALEN_32	3
++#define TAS5782M_DAC_ROUTE	0x2a
++#define TAS5782M_DAC_ROUTE_OFF	0x00
++#define TAS5782M_DAC_ROUTE_LR	0x11
++#define TAS5782M_VOL_L		0x3d
++#define TAS5782M_VOL_R		0x3e
++#define TAS5782M_CLK_ERR	0x5e
++#define TAS5782M_POWER_STATE	0x76
++#define TAS5782M_BOOK		0x7f
++
++/*
++ * Digital volume, after the DSP: 0x30 is 0 dB, each step down is -0.5 dB,
++ * 0xff is mute. The register goes up to +24 dB, but the speaker tuning
++ * (limiter and protection) sits in the DSP before it, so gain above 0 dB
++ * would bypass it. The control is capped at 0 dB.
++ */
++#define TAS5782M_VOL_0DB	0x30
++#define TAS5782M_VOL_MUTE	0xff
++#define TAS5782M_VOL_STEPS	(TAS5782M_VOL_MUTE - TAS5782M_VOL_0DB)
++
++static const DECLARE_TLV_DB_SCALE(tas5782m_vol_tlv, -10350, 50, 1);
++
++/*
++ * Start of every configuration: book 0 / page 0, standby and power down,
++ * reset modules and registers. The datasheet asks for a delay after the
++ * reset before the next write.
++ */
++static const struct reg_sequence tas5782m_reset_seq[] = {
++	{ TAS5782M_PAGE, 0x00 },
++	{ TAS5782M_BOOK, 0x00 },
++	{ TAS5782M_POWER, TAS5782M_POWER_STANDBY | TAS5782M_POWER_PDOWN },
++	{ TAS5782M_RESET, TAS5782M_RESET_MOD | TAS5782M_RESET_REG,
++	  5000 },
++	{ TAS5782M_PAGE, 0x00 },
++	{ TAS5782M_BOOK, 0x00 },
++	{ TAS5782M_PAGE, 0x00 },
++};
++
++static const char * const tas5782m_supply_names[] = {
++	"dvdd", "avdd", "pvdd",
++};
++
++struct tas5782m_priv {
++	struct device *dev;
++	struct regmap *regmap;
++	struct regulator_bulk_data supplies[ARRAY_SIZE(tas5782m_supply_names)];
++	struct gpio_desc *pdn_gpio;
++	struct gpio_desc *fault_gpio;
++
++	const struct reg_sequence *dsp_cfg;
++	unsigned int dsp_cfg_len;
++
++	/* Serialises everything below and keeps the device on book 0/page 0 */
++	struct mutex lock;
++	bool powered;		/* supplies on, out of power down */
++	bool configured;	/* DSP configuration written since power-up */
++	bool running;		/* out of standby */
++	bool muted;
++	unsigned int vol[2];	/* control values, 0 = mute */
++	u8 i2s_fmt;		/* AFMT and ALEN bits of TAS5782M_I2S_1 */
++};
++
++static int tas5782m_write_vol(struct tas5782m_priv *tas)
++{
++	int ret;
++
++	ret = regmap_write(tas->regmap, TAS5782M_VOL_L,
++			   TAS5782M_VOL_MUTE - tas->vol[0]);
++	if (ret)
++		return ret;
++
++	return regmap_write(tas->regmap, TAS5782M_VOL_R,
++			    TAS5782M_VOL_MUTE - tas->vol[1]);
++}
++
++static int tas5782m_write_mute(struct tas5782m_priv *tas)
++{
++	if (tas->muted)
++		return regmap_multi_reg_write(tas->regmap,
++			(const struct reg_sequence[]) {
++				{ TAS5782M_MUTE, TAS5782M_MUTE_BOTH },
++				{ TAS5782M_DAC_ROUTE, TAS5782M_DAC_ROUTE_OFF },
++			}, 2);
++
++	return regmap_multi_reg_write(tas->regmap,
++		(const struct reg_sequence[]) {
++			{ TAS5782M_DAC_ROUTE, TAS5782M_DAC_ROUTE_LR },
++			{ TAS5782M_MUTE, 0x00 },
++		}, 2);
++}
++
++static void tas5782m_log_status(struct tas5782m_priv *tas, const char *when)
++{
++	unsigned int clk = 0, state = 0;
++
++	regmap_read(tas->regmap, TAS5782M_CLK_ERR, &clk);
++	regmap_read(tas->regmap, TAS5782M_POWER_STATE, &state);
++	dev_dbg(tas->dev, "%s: clock errors 0x%02x, power state 0x%02x%s\n",
++		when, clk, state,
++		tas->fault_gpio && gpiod_get_value_cansleep(tas->fault_gpio) > 0 ?
++		", FAULT" : "");
++}
++
++/*
++ * Reset the device and write the DSP configuration. The device clocks
++ * itself from SCLK, so this has to run while the I2S clocks are on. It
++ * leaves the device out of standby, on book 0 / page 0, and muted.
++ */
++static int tas5782m_configure(struct tas5782m_priv *tas)
++{
++	int ret;
++
++	tas->configured = false;
++	tas->running = false;
++
++	ret = regmap_multi_reg_write(tas->regmap, tas5782m_reset_seq,
++				     ARRAY_SIZE(tas5782m_reset_seq));
++	if (ret)
++		goto err;
++
++	ret = regmap_multi_reg_write(tas->regmap, tas->dsp_cfg,
++				     tas->dsp_cfg_len);
++	if (ret)
++		goto err;
++
++	/* The configuration may end on any book or page */
++	ret = regmap_multi_reg_write(tas->regmap, tas5782m_reset_seq, 2);
++	if (ret)
++		goto err;
++	ret = regmap_write(tas->regmap, TAS5782M_PAGE, 0x00);
++	if (ret)
++		goto err;
++
++	ret = regmap_update_bits(tas->regmap, TAS5782M_I2S_1,
++				 TAS5782M_I2S_AFMT_MASK | TAS5782M_I2S_ALEN_MASK,
++				 tas->i2s_fmt);
++	if (ret)
++		goto err;
++
++	tas->configured = true;
++	tas->running = true;
++	tas5782m_log_status(tas, "configured");
++	return 0;
++
++err:
++	dev_err(tas->dev, "failed to write DSP configuration: %d\n", ret);
++	/* Best effort: leave the amplifier silent */
++	regmap_write(tas->regmap, TAS5782M_POWER,
++		     TAS5782M_POWER_STANDBY | TAS5782M_POWER_PDOWN);
++	return ret;
++}
++
++/* Called with the I2S clocks running (from .mute_stream in prepare) */
++static int tas5782m_start(struct tas5782m_priv *tas)
++{
++	int ret;
++
++	if (!tas->powered)
++		return -ENODEV;
++
++	if (!tas->configured) {
++		/* Let SCLK settle before the PLL is set to follow it */
++		usleep_range(10000, 15000);
++		ret = tas5782m_configure(tas);
++	} else if (!tas->running) {
++		ret = regmap_write(tas->regmap, TAS5782M_POWER, 0x00);
++		if (!ret)
++			tas->running = true;
++	} else {
++		ret = 0;
++	}
++	if (ret)
++		return ret;
++
++	ret = tas5782m_write_vol(tas);
++	if (ret)
++		return ret;
++
++	return tas5782m_write_mute(tas);
++}
++
++/* Soft mute, wait for the volume ramp, then standby. */
++static void tas5782m_stop(struct tas5782m_priv *tas)
++{
++	if (!tas->running)
++		return;
++
++	tas5782m_write_mute(tas);
++	/* Ramp-down from 0 dB at the default rate takes under 20 ms at 48 kHz */
++	msleep(25);
++	tas5782m_log_status(tas, "stop");
++	regmap_write(tas->regmap, TAS5782M_POWER, TAS5782M_POWER_STANDBY);
++	tas->running = false;
++}
++
++static int tas5782m_mute_stream(struct snd_soc_dai *dai, int mute, int stream)
++{
++	struct tas5782m_priv *tas = snd_soc_component_get_drvdata(dai->component);
++	int ret = 0;
++
++	guard(mutex)(&tas->lock);
++
++	tas->muted = mute;
++	if (mute) {
++		tas5782m_stop(tas);
++	} else {
++		ret = tas5782m_start(tas);
++		if (ret) {
++			/* Never play without the configuration in place */
++			tas->muted = true;
++			tas5782m_stop(tas);
++		}
++	}
++
++	return ret;
++}
++
++static int tas5782m_hw_params(struct snd_pcm_substream *substream,
++			      struct snd_pcm_hw_params *params,
++			      struct snd_soc_dai *dai)
++{
++	struct tas5782m_priv *tas = snd_soc_component_get_drvdata(dai->component);
++	u8 alen;
++
++	/* The DSP configuration is for 48 kHz only */
++	if (params_rate(params) != 48000)
++		return -EINVAL;
++
++	switch (params_width(params)) {
++	case 16:
++		alen = TAS5782M_I2S_ALEN_16;
++		break;
++	case 20:
++		alen = TAS5782M_I2S_ALEN_20;
++		break;
++	case 24:
++		alen = TAS5782M_I2S_ALEN_24;
++		break;
++	case 32:
++		alen = TAS5782M_I2S_ALEN_32;
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	guard(mutex)(&tas->lock);
++	tas->i2s_fmt = (tas->i2s_fmt & ~TAS5782M_I2S_ALEN_MASK) | alen;
++	if (tas->configured)
++		return regmap_update_bits(tas->regmap, TAS5782M_I2S_1,
++					  TAS5782M_I2S_ALEN_MASK, alen);
++
++	return 0;
++}
++
++static int tas5782m_set_fmt(struct snd_soc_dai *dai, unsigned int fmt)
++{
++	struct tas5782m_priv *tas = snd_soc_component_get_drvdata(dai->component);
++	u8 afmt;
++
++	if ((fmt & SND_SOC_DAIFMT_CLOCK_PROVIDER_MASK) != SND_SOC_DAIFMT_CBC_CFC)
++		return -EINVAL;
++	if ((fmt & SND_SOC_DAIFMT_INV_MASK) != SND_SOC_DAIFMT_NB_NF)
++		return -EINVAL;
++
++	switch (fmt & SND_SOC_DAIFMT_FORMAT_MASK) {
++	case SND_SOC_DAIFMT_I2S:
++		afmt = TAS5782M_I2S_AFMT_I2S;
++		break;
++	case SND_SOC_DAIFMT_LEFT_J:
++		afmt = TAS5782M_I2S_AFMT_LJ;
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	guard(mutex)(&tas->lock);
++	tas->i2s_fmt = (tas->i2s_fmt & ~TAS5782M_I2S_AFMT_MASK) | afmt;
++	if (tas->configured)
++		return regmap_update_bits(tas->regmap, TAS5782M_I2S_1,
++					  TAS5782M_I2S_AFMT_MASK, afmt);
++
++	return 0;
++}
++
++static const struct snd_soc_dai_ops tas5782m_dai_ops = {
++	.hw_params	= tas5782m_hw_params,
++	.set_fmt	= tas5782m_set_fmt,
++	.mute_stream	= tas5782m_mute_stream,
++	.no_capture_mute = 1,
++};
++
++static struct snd_soc_dai_driver tas5782m_dai = {
++	.name		= "tas5782m-amplifier",
++	.playback	= {
++		.stream_name	= "Playback",
++		.channels_min	= 2,
++		.channels_max	= 2,
++		.rates		= SNDRV_PCM_RATE_48000,
++		.formats	= SNDRV_PCM_FMTBIT_S16_LE |
++				  SNDRV_PCM_FMTBIT_S24_LE |
++				  SNDRV_PCM_FMTBIT_S32_LE,
++	},
++	.ops		= &tas5782m_dai_ops,
++};
++
++static int tas5782m_vol_info(struct snd_kcontrol *kcontrol,
++			     struct snd_ctl_elem_info *uinfo)
++{
++	uinfo->type = SNDRV_CTL_ELEM_TYPE_INTEGER;
++	uinfo->count = 2;
++	uinfo->value.integer.min = 0;
++	uinfo->value.integer.max = TAS5782M_VOL_STEPS;
++	return 0;
++}
++
++static int tas5782m_vol_get(struct snd_kcontrol *kcontrol,
++			    struct snd_ctl_elem_value *ucontrol)
++{
++	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
++	struct tas5782m_priv *tas = snd_soc_component_get_drvdata(component);
++
++	guard(mutex)(&tas->lock);
++	ucontrol->value.integer.value[0] = tas->vol[0];
++	ucontrol->value.integer.value[1] = tas->vol[1];
++	return 0;
++}
++
++static int tas5782m_vol_put(struct snd_kcontrol *kcontrol,
++			    struct snd_ctl_elem_value *ucontrol)
++{
++	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
++	struct tas5782m_priv *tas = snd_soc_component_get_drvdata(component);
++	long l = ucontrol->value.integer.value[0];
++	long r = ucontrol->value.integer.value[1];
++	int ret;
++
++	if (l < 0 || l > TAS5782M_VOL_STEPS || r < 0 || r > TAS5782M_VOL_STEPS)
++		return -EINVAL;
++
++	guard(mutex)(&tas->lock);
++	if (tas->vol[0] == l && tas->vol[1] == r)
++		return 0;
++
++	tas->vol[0] = l;
++	tas->vol[1] = r;
++	/* Registers survive standby; they are rewritten after a reset */
++	if (tas->configured) {
++		ret = tas5782m_write_vol(tas);
++		if (ret)
++			return ret;
++	}
++
++	return 1;
++}
++
++static const struct snd_kcontrol_new tas5782m_controls[] = {
++	{
++		.iface	= SNDRV_CTL_ELEM_IFACE_MIXER,
++		.name	= "Digital Playback Volume",
++		.access	= SNDRV_CTL_ELEM_ACCESS_TLV_READ |
++			  SNDRV_CTL_ELEM_ACCESS_READWRITE,
++		.tlv.p	= tas5782m_vol_tlv,
++		.info	= tas5782m_vol_info,
++		.get	= tas5782m_vol_get,
++		.put	= tas5782m_vol_put,
++	},
++};
++
++static const struct snd_soc_dapm_widget tas5782m_dapm_widgets[] = {
++	SND_SOC_DAPM_AIF_IN("DAC IN", "Playback", 0, SND_SOC_NOPM, 0, 0),
++	SND_SOC_DAPM_DAC("DAC", NULL, SND_SOC_NOPM, 0, 0),
++	SND_SOC_DAPM_OUTPUT("OUT"),
++};
++
++static const struct snd_soc_dapm_route tas5782m_dapm_routes[] = {
++	{ "DAC", NULL, "DAC IN" },
++	{ "OUT", NULL, "DAC" },
++};
++
++static int tas5782m_power_on(struct tas5782m_priv *tas)
++{
++	int ret;
++
++	ret = regulator_bulk_enable(ARRAY_SIZE(tas->supplies), tas->supplies);
++	if (ret) {
++		dev_err(tas->dev, "failed to enable supplies: %d\n", ret);
++		return ret;
++	}
++
++	/* Supplies must be stable for 100 ms before leaving power down */
++	msleep(120);
++	gpiod_set_value_cansleep(tas->pdn_gpio, 0);
++	usleep_range(10000, 15000);
++
++	tas->powered = true;
++	tas->configured = false;
++	tas->running = false;
++	return 0;
++}
++
++static void tas5782m_power_off(struct tas5782m_priv *tas)
++{
++	if (!tas->powered)
++		return;
++
++	if (tas->configured)
++		regmap_write(tas->regmap, TAS5782M_POWER,
++			     TAS5782M_POWER_STANDBY | TAS5782M_POWER_PDOWN);
++	gpiod_set_value_cansleep(tas->pdn_gpio, 1);
++	usleep_range(10000, 15000);
++	regulator_bulk_disable(ARRAY_SIZE(tas->supplies), tas->supplies);
++
++	tas->powered = false;
++	tas->configured = false;
++	tas->running = false;
++}
++
++static int tas5782m_suspend(struct snd_soc_component *component)
++{
++	struct tas5782m_priv *tas = snd_soc_component_get_drvdata(component);
++
++	guard(mutex)(&tas->lock);
++	tas5782m_stop(tas);
++	tas5782m_power_off(tas);
++	return 0;
++}
++
++static int tas5782m_resume(struct snd_soc_component *component)
++{
++	struct tas5782m_priv *tas = snd_soc_component_get_drvdata(component);
++
++	guard(mutex)(&tas->lock);
++	/* The configuration is written again on the next stream start */
++	return tas5782m_power_on(tas);
++}
++
++static const struct snd_soc_component_driver tas5782m_component = {
++	.controls		= tas5782m_controls,
++	.num_controls		= ARRAY_SIZE(tas5782m_controls),
++	.dapm_widgets		= tas5782m_dapm_widgets,
++	.num_dapm_widgets	= ARRAY_SIZE(tas5782m_dapm_widgets),
++	.dapm_routes		= tas5782m_dapm_routes,
++	.num_dapm_routes	= ARRAY_SIZE(tas5782m_dapm_routes),
++	.suspend		= tas5782m_suspend,
++	.resume			= tas5782m_resume,
++	.endianness		= 1,
++};
++
++static const struct regmap_config tas5782m_regmap = {
++	.reg_bits	= 8,
++	.val_bits	= 8,
++	.max_register	= 0x7f,
++	/*
++	 * Every page of every book shares the same 128 addresses and the
++	 * configuration switches book and page a few hundred times, so no
++	 * cache: the driver keeps the device on book 0 / page 0 between
++	 * its own sequences.
++	 */
++	.cache_type	= REGCACHE_NONE,
++};
++
++static int tas5782m_load_config(struct tas5782m_priv *tas)
++{
++	const struct firmware *fw;
++	const char *name;
++	char *filename;
++	struct reg_sequence *cfg;
++	unsigned int i;
++	int ret;
++
++	if (device_property_read_string(tas->dev, "ti,dsp-config-name", &name))
++		name = "default";
++
++	filename = devm_kasprintf(tas->dev, GFP_KERNEL, "tas5782m_dsp_%s.bin",
++				  name);
++	if (!filename)
++		return -ENOMEM;
++
++	ret = request_firmware(&fw, filename, tas->dev);
++	if (ret)
++		return dev_err_probe(tas->dev, ret, "failed to load %s\n",
++				     filename);
++
++	if (fw->size < 2 || fw->size & 1) {
++		ret = dev_err_probe(tas->dev, -EINVAL, "%s is invalid\n",
++				    filename);
++		goto out;
++	}
++
++	tas->dsp_cfg_len = fw->size / 2;
++	cfg = devm_kcalloc(tas->dev, tas->dsp_cfg_len, sizeof(*cfg), GFP_KERNEL);
++	if (!cfg) {
++		ret = -ENOMEM;
++		goto out;
++	}
++
++	for (i = 0; i < tas->dsp_cfg_len; i++) {
++		cfg[i].reg = fw->data[2 * i];
++		cfg[i].def = fw->data[2 * i + 1];
++		if (cfg[i].reg > 0x7f) {
++			ret = dev_err_probe(tas->dev, -EINVAL,
++					    "%s: bad register at %u\n",
++					    filename, 2 * i);
++			goto out;
++		}
++	}
++
++	tas->dsp_cfg = cfg;
++	dev_info(tas->dev, "%s: %u register writes\n", filename,
++		 tas->dsp_cfg_len);
++out:
++	release_firmware(fw);
++	return ret;
++}
++
++static int tas5782m_i2c_probe(struct i2c_client *i2c)
++{
++	struct device *dev = &i2c->dev;
++	struct tas5782m_priv *tas;
++	unsigned int i;
++	int ret;
++
++	tas = devm_kzalloc(dev, sizeof(*tas), GFP_KERNEL);
++	if (!tas)
++		return -ENOMEM;
++
++	tas->dev = dev;
++	i2c_set_clientdata(i2c, tas);
++	mutex_init(&tas->lock);
++	tas->muted = true;
++	tas->i2s_fmt = TAS5782M_I2S_AFMT_I2S | TAS5782M_I2S_ALEN_24;
++	/* Start quiet: -30 dB */
++	tas->vol[0] = TAS5782M_VOL_STEPS - 60;
++	tas->vol[1] = TAS5782M_VOL_STEPS - 60;
++
++	tas->regmap = devm_regmap_init_i2c(i2c, &tas5782m_regmap);
++	if (IS_ERR(tas->regmap))
++		return dev_err_probe(dev, PTR_ERR(tas->regmap),
++				     "failed to init regmap\n");
++
++	for (i = 0; i < ARRAY_SIZE(tas->supplies); i++)
++		tas->supplies[i].supply = tas5782m_supply_names[i];
++	ret = devm_regulator_bulk_get(dev, ARRAY_SIZE(tas->supplies),
++				      tas->supplies);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to get supplies\n");
++
++	/* Held in power down until the supplies are up */
++	tas->pdn_gpio = devm_gpiod_get_optional(dev, "powerdown",
++						GPIOD_OUT_HIGH);
++	if (IS_ERR(tas->pdn_gpio))
++		return dev_err_probe(dev, PTR_ERR(tas->pdn_gpio),
++				     "failed to get powerdown gpio\n");
++
++	tas->fault_gpio = devm_gpiod_get_optional(dev, "fault", GPIOD_IN);
++	if (IS_ERR(tas->fault_gpio))
++		return dev_err_probe(dev, PTR_ERR(tas->fault_gpio),
++				     "failed to get fault gpio\n");
++
++	ret = tas5782m_load_config(tas);
++	if (ret)
++		return ret;
++
++	ret = tas5782m_power_on(tas);
++	if (ret)
++		return ret;
++
++	/* Leave it in standby until a stream starts */
++	ret = regmap_write(tas->regmap, TAS5782M_POWER, TAS5782M_POWER_STANDBY);
++	if (ret) {
++		dev_err(dev, "no response from device: %d\n", ret);
++		goto err_power;
++	}
++
++	ret = snd_soc_register_component(dev, &tas5782m_component,
++					 &tas5782m_dai, 1);
++	if (ret) {
++		dev_err(dev, "failed to register component: %d\n", ret);
++		goto err_power;
++	}
++
++	return 0;
++
++err_power:
++	tas5782m_power_off(tas);
++	return ret;
++}
++
++static void tas5782m_i2c_remove(struct i2c_client *i2c)
++{
++	struct tas5782m_priv *tas = i2c_get_clientdata(i2c);
++
++	/* Unregister first so that no stream can start while powering off */
++	snd_soc_unregister_component(&i2c->dev);
++
++	guard(mutex)(&tas->lock);
++	tas5782m_stop(tas);
++	tas5782m_power_off(tas);
++}
++
++static const struct i2c_device_id tas5782m_i2c_id[] = {
++	{ .name = "tas5782m" },
++	{ }
++};
++MODULE_DEVICE_TABLE(i2c, tas5782m_i2c_id);
++
++static const struct of_device_id tas5782m_of_match[] = {
++	{ .compatible = "ti,tas5782m" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, tas5782m_of_match);
++
++static struct i2c_driver tas5782m_i2c_driver = {
++	.probe		= tas5782m_i2c_probe,
++	.remove		= tas5782m_i2c_remove,
++	.id_table	= tas5782m_i2c_id,
++	.driver		= {
++		.name		= "tas5782m",
++		.of_match_table	= tas5782m_of_match,
++	},
++};
++module_i2c_driver(tas5782m_i2c_driver);
++
++MODULE_DESCRIPTION("TAS5782M audio amplifier driver");
++MODULE_LICENSE("GPL");
+-- 
+2.56.0
+

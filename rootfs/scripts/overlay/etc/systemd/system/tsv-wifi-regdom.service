@@ -1,0 +1,11 @@
+[Unit]
+Description=Set the Wi-Fi regulatory domain after the phy registers
+Documentation=file:/usr/local/sbin/tsv-wifi-regdom
+# Started by udev when a phy appears (/etc/udev/rules.d/90-tsv-wifi-regdom.rules).
+ConditionPathExists=/etc/conf.d/wireless-regdom
+Before=NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/tsv-wifi-regdom
+TimeoutSec=60

@@ -1,0 +1,158 @@
+From: Jetha Chan <jethachan@gmail.com>
+Subject: [PATCH] wifi: ath10k: don't wait for security indications QCA9379 SDIO does not send
+
+ath10k_install_key() sends WMI_VDEV_INSTALL_KEY_CMDID and then waits up
+to 3 s for HTT_T2H_MSG_TYPE_SEC_IND, failing with -ETIMEDOUT if it does
+not come. The QCA9379 SDIO firmware (WLAN.NPL.1.6-00163-QCANPLSWPZ-1)
+sends the indication for the pairwise and group keys installed when a
+station associates (those never time out), but not when the group key
+is replaced and not for any key removal. On a WPA2-PSK network with a
+600 s group rekey interval, every rekey ends the connection (Linux
+6.19; this code is unchanged since):
+
+  ath10k_sdio mmc1:0001:1: failed to install key for vdev 0 peer xx:xx:xx:xx:1a:61: -110
+  wlan0: failed to set key (2, ff:ff:ff:ff:ff:ff) to hardware (-110)
+  wlan0: deauthenticating from xx:xx:xx:xx:1a:61 by local choice (Reason: 1=UNSPECIFIED)
+
+and every roam between two access points of the network spends 6 s on
+removing the old keys before authenticating to the new one:
+
+  [222928.982018] ath10k_sdio mmc1:0001:1: failed to install key for vdev 0 peer xx:xx:xx:xx:1c:1c: -110
+  [222928.982106] wlan0: failed to remove key (1, ff:ff:ff:ff:ff:ff) from hardware (-110)
+  [222928.991626] wlan0: disconnect from AP xx:xx:xx:xx:1c:1c for new auth to xx:xx:xx:xx:1a:61
+  [222932.054043] ath10k_sdio mmc1:0001:1: failed to install key for vdev 0 peer xx:xx:xx:xx:1c:1c: -110
+  [222932.054130] wlan0: failed to remove key (0, xx:xx:xx:xx:1c:1c) from hardware (-110)
+  [222932.136985] wlan0: authenticate with xx:xx:xx:xx:1a:61 (local address=xx:xx:xx:xx:af:4b)
+
+Treating the timeout as success would keep the connection but still
+stall each rekey, and the supplicant's reply to group message 1/2, for
+3 s (6 s when mac80211 first removes the key it replaces), well past
+the 1 s after which hostapd by default resends group message 1/2 and
+close to the point where it gives up. Not waiting is
+safe for these operations: a station only receives with its group key,
+so no transmit depends on the firmware having programmed it, and the AP
+switches to the new group key only after the supplicant has answered,
+which it does after set_key() returns. Nothing after a removal depends
+on its completion either.
+
+Add a hw_params flag for firmware that behaves like this, set it for
+QCA9379 SDIO, and with it skip the wait for station group key
+installs (other than static WEP, which is used for transmit) and for
+removals. Other hardware keeps waiting for every operation, so a late
+indication cannot complete a later install's wait early on firmware
+that does send one. Pairwise and AP group key installs still wait.
+
+The indication handler also resets the per-TID last PN that high
+latency devices use for their own replay check on frames with an
+extended TID, including group addressed ones. Do that when a station
+group key is installed without waiting, or frames under the new key,
+whose PN starts again from zero, are dropped as replays.
+
+Waiting for the indication has been part of ath10k_install_key() since
+the driver was added. Removal timeouts on QCA6174 and WCN3990 are
+discussed in the threads below.
+
+Link: https://lists.infradead.org/pipermail/ath10k/2024-July/015975.html
+Link: https://lists.infradead.org/pipermail/ath10k/2026-February/016781.html
+Link: https://lists.infradead.org/pipermail/ath10k/2026-September/017285.html
+Signed-off-by: Jetha Chan <jethachan@gmail.com>
+---
+diff --git a/drivers/net/wireless/ath/ath10k/core.c b/drivers/net/wireless/ath/ath10k/core.c
+index 92fb7f930..f4a126704 100644
+--- a/drivers/net/wireless/ath/ath10k/core.c
++++ b/drivers/net/wireless/ath/ath10k/core.c
+@@ -697,6 +697,7 @@ static const struct ath10k_hw_params ath10k_hw_params_list[] = {
+ 		.use_fw_tx_credits = true,
+ 		.delay_unmap_buffer = false,
+ 		.mcast_frame_registration = false,
++		.key_update_no_sec_ind = true,
+ 	},
+ 	{
+ 		.id = QCA4019_HW_1_0_DEV_VERSION,
+diff --git a/drivers/net/wireless/ath/ath10k/hw.h b/drivers/net/wireless/ath/ath10k/hw.h
+index 5b37d0134..308b46391 100644
+--- a/drivers/net/wireless/ath/ath10k/hw.h
++++ b/drivers/net/wireless/ath/ath10k/hw.h
+@@ -649,6 +649,13 @@ struct ath10k_hw_params {
+ 
+ 	/* The hardware support multicast frame registrations */
+ 	bool mcast_frame_registration;
++
++	/* The firmware sends an HTT security indication for the keys set up
++	 * when a station associates, but not when a station's group key is
++	 * replaced or when any key is removed. ath10k_install_key() must not
++	 * wait for those.
++	 */
++	bool key_update_no_sec_ind;
+ };
+ 
+ struct htt_resp;
+diff --git a/drivers/net/wireless/ath/ath10k/mac.c b/drivers/net/wireless/ath/ath10k/mac.c
+index 8e604697d..1e37a0bc2 100644
+--- a/drivers/net/wireless/ath/ath10k/mac.c
++++ b/drivers/net/wireless/ath/ath10k/mac.c
+@@ -304,6 +304,47 @@ static int ath10k_send_key(struct ath10k_vif *arvif,
+ 	return ath10k_wmi_vdev_install_key(arvif->ar, &arg);
+ }
+ 
++/* Whether the firmware confirms this key operation with an HTT security
++ * indication (HTT_T2H_MSG_TYPE_SEC_IND).
++ */
++static bool ath10k_mac_key_has_sec_ind(struct ath10k_vif *arvif,
++				       struct ieee80211_key_conf *key,
++				       enum set_key_cmd cmd, u32 flags)
++{
++	if (!arvif->ar->hw_params.key_update_no_sec_ind)
++		return true;
++
++	if (cmd == DISABLE_KEY)
++		return false;
++
++	/* A station only receives with its group key. Static WEP keys are
++	 * the exception: mac80211 sets them as group keys, but they are used
++	 * for transmit as well (see ath10k_set_key()).
++	 */
++	return !(arvif->vdev_type == WMI_VDEV_TYPE_STA &&
++		 (flags & WMI_KEY_GROUP) &&
++		 key->cipher != WLAN_CIPHER_SUITE_WEP40 &&
++		 key->cipher != WLAN_CIPHER_SUITE_WEP104);
++}
++
++/* Forget the last PN seen per TID, as ath10k_htt_rx_sec_ind_handler() does
++ * for a new key: the new key starts a new PN sequence.
++ */
++static void ath10k_mac_reset_rx_pn(struct ath10k *ar, u32 vdev_id,
++				   const u8 *addr)
++{
++	struct ath10k_peer *peer;
++
++	spin_lock_bh(&ar->data_lock);
++	peer = ath10k_peer_find(ar, vdev_id, addr);
++	if (peer) {
++		memset(peer->tids_last_pn_valid, 0,
++		       sizeof(peer->tids_last_pn_valid));
++		memset(peer->tids_last_pn, 0, sizeof(peer->tids_last_pn));
++	}
++	spin_unlock_bh(&ar->data_lock);
++}
++
+ static int ath10k_install_key(struct ath10k_vif *arvif,
+ 			      struct ieee80211_key_conf *key,
+ 			      enum set_key_cmd cmd,
+@@ -324,6 +365,16 @@ static int ath10k_install_key(struct ath10k_vif *arvif,
+ 	if (ret)
+ 		return ret;
+ 
++	if (!ath10k_mac_key_has_sec_ind(arvif, key, cmd, flags)) {
++		ath10k_dbg(ar, ATH10K_DBG_MAC,
++			   "mac vdev %d %s key %d for %pM without waiting for sec ind\n",
++			   arvif->vdev_id, cmd == SET_KEY ? "set" : "del",
++			   key->keyidx, macaddr);
++		if (cmd == SET_KEY)
++			ath10k_mac_reset_rx_pn(ar, arvif->vdev_id, macaddr);
++		return 0;
++	}
++
+ 	time_left = wait_for_completion_timeout(&ar->install_key_done, 3 * HZ);
+ 	if (time_left == 0)
+ 		return -ETIMEDOUT;
