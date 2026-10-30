@@ -42,3 +42,5 @@ kernel/build-*/
 
 # Camera stream scratch (vendor extracts, venv)
 streams/camera/work/
+streams/camera/downloads/
+streams/*/results/

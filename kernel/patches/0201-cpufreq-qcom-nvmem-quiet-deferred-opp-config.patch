@@ -1,0 +1,38 @@
+Subject: [PATCH] cpufreq: qcom-nvmem: use dev_err_probe() for OPP config failure
+
+On MSM8953 the CPU nodes carry interconnect paths to the BIMC and to the
+APCS CCI clock controller (b011050.clock-controller). When
+qcom-cpufreq-nvmem probes before both interconnect providers have
+registered, dev_pm_opp_set_config() fails in _allocate_opp_table() ->
+dev_pm_opp_of_find_icc_paths() with -EPROBE_DEFER (the table is created
+with getclk = false, so no clock or regulator lookup is involved and the
+interconnect lookup is the only path that can defer). The driver logs that as an error:
+
+  cpu cpu0: Failed to set OPP config
+  cpu cpu0: Failed to set OPP config
+
+and then probes successfully on a later pass, so cpufreq works but the
+boot log carries two errors that look like a real failure.
+
+Use dev_err_probe() on the platform device, so a deferral is silent
+(and recorded in /sys/kernel/debug/devices_deferred with its reason)
+while any other error is still printed, now with its error code.
+
+---
+diff --git a/drivers/cpufreq/qcom-cpufreq-nvmem.c b/drivers/cpufreq/qcom-cpufreq-nvmem.c
+index d706a7677..e0b4a1cbc 100644
+--- a/drivers/cpufreq/qcom-cpufreq-nvmem.c
++++ b/drivers/cpufreq/qcom-cpufreq-nvmem.c
+@@ -560,8 +560,10 @@ static int qcom_cpufreq_probe(struct platform_device *pdev)
+ 		if (config.supported_hw) {
+ 			drv->cpus[cpu].opp_token = dev_pm_opp_set_config(cpu_dev, &config);
+ 			if (drv->cpus[cpu].opp_token < 0) {
+-				ret = drv->cpus[cpu].opp_token;
+-				dev_err(cpu_dev, "Failed to set OPP config\n");
++				ret = dev_err_probe(&pdev->dev,
++						    drv->cpus[cpu].opp_token,
++						    "%s: failed to set OPP config\n",
++						    dev_name(cpu_dev));
+ 				goto free_opp;
+ 			}
+ 		}

@@ -1,0 +1,40 @@
+Subject: [PATCH] firmware: psci: don't request PC mode when firmware is fixed in OSI mode
+
+Every boot on MSM8953 logs
+
+  psci: OSI mode supported.
+  psci: [Firmware Bug]: failed to set PC mode: -1
+
+psci_1_0_init() asks the firmware for platform-coordinated mode as a
+default whenever OSI is advertised. The MSM8953 TrustZone runs in OSI
+mode only and answers SET_SUSPEND_MODE with NOT_SUPPORTED (-1). The
+platform already describes this with "force-psci-domains" on the psci
+node, which cpuidle-psci-domain uses to skip its own (OSI) mode switch,
+and idle works: CPU power collapse and the cluster retention/GDHS
+domain states are entered (see pm_genpd idle_states).
+
+Skip the PC default as well when "force-psci-domains" is present. The
+call failed and changed nothing, so the firmware state is the same;
+only the misleading firmware-bug line goes away.
+---
+diff --git a/drivers/firmware/psci/psci.c b/drivers/firmware/psci/psci.c
+index e73bae6cb..d080fffe5 100644
+--- a/drivers/firmware/psci/psci.c
++++ b/drivers/firmware/psci/psci.c
+@@ -791,8 +791,14 @@ static int __init psci_1_0_init(const struct device_node *np)
+ 	if (psci_has_osi_support()) {
+ 		pr_info("OSI mode supported.\n");
+ 
+-		/* Default to PC mode. */
+-		psci_set_osi_mode(false);
++		/*
++		 * Default to PC mode, unless the DT says the firmware is
++		 * fixed in OSI mode ("force-psci-domains"): such firmware
++		 * rejects SET_SUSPEND_MODE and the call only logs a bogus
++		 * firmware bug.
++		 */
++		if (!of_property_read_bool(np, "force-psci-domains"))
++			psci_set_osi_mode(false);
+ 	}
+ 
+ 	return 0;

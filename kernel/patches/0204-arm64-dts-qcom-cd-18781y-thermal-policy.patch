@@ -1,0 +1,102 @@
+Subject: [PATCH] arm64: dts: qcom: cd-18781y: two-stage CPU thermal policy
+
+msm8953.dtsi gives every CPU zone one passive trip at 80 C with the
+full cooling range, and a critical trip at 100 C. On this passively
+cooled, always-on display that trip never acts in a normal room (all
+eight cores at 1804.8 MHz for 10 minutes peak at 61-62 C), and when it
+does act, in a hot room or with the back covered, step_wise goes from
+full speed towards 652.8 MHz with nothing in between.
+
+Add a first stage at 75 C (5 C hysteresis) that caps the CPUs at
+1420.8 MHz at most (cooling state 2: about 21 % less peak throughput,
+about 40 % less dynamic power at 745 mV instead of 850 mV), move the
+full-range passive trip to 85 C, and keep critical at 100 C.
+
+The GPU zone has the lowest critical trip (90 C); give it a CPU
+cooling map at 80 C as well, so the CPUs back off before the GPU zone
+shuts the system down.
+
+All eight CPUs share one cpufreq policy, so every map points at the
+same cooling device; step_wise takes the highest state requested by
+any zone.
+---
+--- a/arch/arm64/boot/dts/qcom/apq8053-lenovo-cd-18781y.dts
++++ b/arch/arm64/boot/dts/qcom/apq8053-lenovo-cd-18781y.dts
+@@ -186,6 +186,77 @@
+ 	};
+ };
+ 
++/*
++ * Thermal policy for an always-on, passively cooled display.
++ *
++ * Measured on this unit (speed bin 6) with all eight cores loaded at
++ * 1804.8 MHz for 10 minutes, screen on, room temperature, CPU sensors at
++ * 29-32 C idle: the hottest CPU sensor reaches 61-62 C and is nearly
++ * flat by the end (+0.3 C over the last two minutes); the GPU sensor
++ * stays about 14 C lower. So in a normal room the CPUs never need to
++ * throttle, and mainline's single 80 C passive trip only acts in a hot
++ * room, in sun or with the back covered, where it would go straight
++ * from full speed to whatever step_wise needs.
++ *
++ * Two stages instead:
++ *  - "warm" at 75 C (clears at 70 C): cap the CPUs, at most down to
++ *    1420.8 MHz (cooling state 2). That costs about 21 % of peak
++ *    throughput and saves about 40 % of dynamic CPU power (f * V^2 at
++ *    745 mV vs 850 mV on this chip), enough to hold the chassis without
++ *    making the UI sluggish.
++ *  - the existing passive trip, raised from 80 C to 85 C: full range,
++ *    down to 652.8 MHz if needed.
++ *  - critical stays at 100 C (orderly power off).
++ * Stock for comparison: thermal-engine's configuration is empty and it
++ * disables msm_thermal's 60 C polling loop at boot, leaving its compiled
++ * defaults plus msm_thermal's emergency limits (1036.8 MHz and hotplug at
++ * 105 C, reset at 115 C). There is no Lenovo tuning to copy.
++ * The GPU zone has the lowest critical trip in the system (90 C), so it
++ * also gets a CPU cooling map at 80 C: the CPUs back off before a
++ * GPU-zone shutdown.
++ */
++#define CPU_WARM_ZONE(n)							\
++&{/thermal-zones/cpu##n-thermal/trips} {					\
++	cpu##n##_warm: trip-point1 {						\
++		temperature = <75000>;						\
++		hysteresis = <5000>;						\
++		type = "passive";						\
++	};								\
++};									\
++&{/thermal-zones/cpu##n-thermal/cooling-maps} {				\
++	map1 {								\
++		trip = <&cpu##n##_warm>;					\
++		cooling-device = <&cpu##n THERMAL_NO_LIMIT 2>;			\
++	};								\
++};									\
++&cpu##n##_alert {							\
++	temperature = <85000>;						\
++}
++
++CPU_WARM_ZONE(0);
++CPU_WARM_ZONE(1);
++CPU_WARM_ZONE(2);
++CPU_WARM_ZONE(3);
++CPU_WARM_ZONE(4);
++CPU_WARM_ZONE(5);
++CPU_WARM_ZONE(6);
++CPU_WARM_ZONE(7);
++
++&{/thermal-zones/gpu-thermal/trips} {
++	gpu_cpu_alert: trip-point1 {
++		temperature = <80000>;
++		hysteresis = <2000>;
++		type = "passive";
++	};
++};
++
++&{/thermal-zones/gpu-thermal/cooling-maps} {
++	map1 {
++		trip = <&gpu_cpu_alert>;
++		cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
++	};
++};
++
+ &gpu_zap_shader {
+ 	firmware-name = "qcom/msm8953/lenovo/cd-18781y/a506_zap.mdt";
+ };

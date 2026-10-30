@@ -1,0 +1,42 @@
+Subject: [PATCH] pmdomain: qcom: cpr4pd: use the APC supply for arrays at the APM threshold
+
+The MSM8953 Array Power Mux feeds the CPU memory arrays either from
+VDD_MX or from the APC rail itself. cpr_vreg_set_voltage() parks the
+rail at the APM threshold (850 mV), switches the mux and then moves to
+the target, selecting the APC supply only when the target is strictly
+above the threshold.
+
+Downstream (cpr3-regulator.c, cpr3_regulator_switch_apm_mode()) selects
+the high (APC) supply when new_volt >= apm_threshold_volt, and in
+closed-loop mode pins any corner whose open-loop voltage is within the
+APM hysteresis of the threshold to a floor of exactly the threshold, so
+on stock such a corner always runs with the arrays on APC.
+
+On this unit (speed bin 6, fusing revision 3) the 1804.8 MHz OPP
+interpolates to 848 mV, rounded up to 850 mV, i.e. exactly the
+threshold. Mainline therefore ran the top OPP with the arrays on MX,
+while stock runs the same corner at 850 mV (measured: pm8953_s5 =
+850000 uV at 1804.8 MHz) with the arrays on APC.
+
+Use >= so the mux setting at the threshold matches the vendor driver.
+Targets below or above the threshold are unaffected.
+---
+diff --git a/drivers/pmdomain/qcom/cpr4pd.c b/drivers/pmdomain/qcom/cpr4pd.c
+index bcdd57bbe..2fbdb2643 100644
+--- a/drivers/pmdomain/qcom/cpr4pd.c
++++ b/drivers/pmdomain/qcom/cpr4pd.c
+@@ -242,7 +242,13 @@ static int cpr_vreg_set_voltage(struct cpr_drv *drv, u32 uv)
+ 
+ 		drv->uv = apm_thr_uv;
+ 
+-		ret = cpr_apm_switch_supply(drv, uv > apm_thr_uv);
++		/*
++		 * Arrays go to the APC rail at and above the threshold, as
++		 * downstream does (new_volt >= apm_threshold_volt selects the
++		 * high supply). A target of exactly the threshold therefore
++		 * runs on APCC, not on MX.
++		 */
++		ret = cpr_apm_switch_supply(drv, uv >= apm_thr_uv);
+ 		if (ret)
+ 			return ret;
+ 	}
