@@ -38,17 +38,26 @@ dev true >/dev/null 2>&1 || { echo "device $SERIAL not reachable over adb" >&2; 
 [[ $(dev id -u | tr -d '\r') == 0 ]] || { echo "adb shell is not root" >&2; exit 1; }
 
 wait_back() {
-  echo "rebooting; waiting up to 180 s for adb"
-  "${A[@]}" reboot || true
+  # adb reboot does not always reboot this device, and adb answering again
+  # proves nothing, so compare boot IDs: success means a different boot.
+  local before after
+  before=$(dev cat /proc/sys/kernel/random/boot_id | tr -d '\r')
+  echo "rebooting (boot $before); waiting up to 180 s for a new boot"
+  dev systemctl reboot >/dev/null 2>&1 || "${A[@]}" reboot || true
   sleep 10
   for _ in $(seq 1 170); do
-    if dev true >/dev/null 2>&1; then
-      echo "back: $(dev uname -r | tr -d '\r'), $(dev systemctl is-system-running | tr -d '\r')"
+    after=$(dev cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d '\r' || true)
+    if [[ -n $after && $after != "$before" ]]; then
+      echo "back: boot $after, $(dev uname -r | tr -d '\r'), $(dev systemctl is-system-running | tr -d '\r')"
       return 0
     fi
     sleep 1
   done
-  echo "DEVICE DID NOT COME BACK. Do not retry; recovery is EDL (FLASHING.md)." >&2
+  if [[ -n ${after:-} && $after == "$before" ]]; then
+    echo "DEVICE DID NOT REBOOT (same boot ID $before). The new kernel is installed but not running." >&2
+  else
+    echo "DEVICE DID NOT COME BACK. Do not retry; recovery is EDL (FLASHING.md)." >&2
+  fi
   return 1
 }
 
