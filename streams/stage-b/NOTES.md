@@ -4,6 +4,24 @@
 
 Repartition the eMMC so root can hold Omarchy, then install Omarchy (omarchy-arm) in a form that suits an 800x1280 portrait touch tablet with 2 GB of RAM.
 
+## Done 2026-10-31
+
+Run by the RUNBOOK, with one change: reboots used `systemctl reboot` and a new `/proc/sys/kernel/random/boot_id`, because `adb reboot` does not always reboot this device.
+
+| Step | Result |
+| --- | --- |
+| Rehearsal on the laptop | `rehearsal OK`; stock blobs byte-identical to `backup-20261029` |
+| Precheck | stock GPT; five tail partitions sha256 OK at their stock places |
+| copy-tail | five copies read back sha256 OK at the new places |
+| write-gpt | both copies written, byte-identical, match `layout.sfdisk` |
+| Drill | rolled back to the stock GPT (verified), precheck passed, new GPT written again (verified) |
+| Reboot on the new table | back in about 15 s; 29 partitions; tail partitions sha256 OK by label; system running |
+| grow | MBR partition 2: 2881536 -> 14000128 sectors; ext4 online to 1750016 blocks; `df` 6.6G, 5.3G free; read-only fsck clean |
+| Second reboot | clean, no failed units, sound card present |
+| Record | GPT on disk byte-identical to `new-primary.bin` / `new-backup.bin` |
+
+Note for checks after a reboot: the ADSP and the sound card come up about 22 s after boot.
+
 ## Status (2026-10-30)
 
 | | |

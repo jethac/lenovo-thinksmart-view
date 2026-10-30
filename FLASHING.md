@@ -123,7 +123,8 @@ The USB serial console is the ACM port (`/dev/ttyACM0` on the laptop, 115200).
 
   `userdata` was never touched, so LineageOS comes back as it was.
 
-## Not in stage A
+## After stage B (done on HUA0BMNX, 2026-10-31)
 
-- Repartitioning (stage B, `devices/storage-emmc/ANALYSIS.md`, with the changes noted there: keep the name `system` for p24, keep `syscfg`, `mcfg`, `apdp`, `msadp`, restore `persist`).
-- Wi-Fi rekey fix, speaker driver, camera, sensors (see `devices/`).
+The partition table is no longer stock: `system` (p24) is 6.80 GiB, `persist`, `syscfg`, `mcfg`, `apdp` and `msadp` moved to the end of the disk, and 22 Android partitions are gone (`streams/stage-b/`). This runbook still works on that layout: `system` starts where it did, and the image grows its root to fill the partition on first boot (`tsv-growroot`). `printgpt` in step 2 now shows 29 partitions; check `system` start 923648 size 14264320 instead of the stock values.
+
+Going back to stock is the stock GPT plus partition images over EDL (`streams/stage-b/RUNBOOK.md`, Rollback).

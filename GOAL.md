@@ -15,7 +15,7 @@ Each item is checked on the device, not inferred from logs. `[x]` means verified
 - [ ] One full-screen app owns the display (no desktop environment): it shows the ai& idle screen and the conversation. The ai& Plymouth theme stays the boot splash. (Splash and the accelerometer-levelled idle screen work; the conversation app does not exist yet.)
 - [ ] Voice in and out on the device, in English, Japanese and Mandarin: Qwen3-ASR for recognition, an on-device speech synthesiser for replies, text sent to ai&. Both models fit in RAM next to the system, with headroom. (Qwen3-ASR Q4_K_M with a Q8_0 conv stem runs at 1.3-1.6x real time: a 2.5 s English command takes 4.0 s, peak about 1 GB; synthesis not chosen yet; see `streams/asr/NOTES.md`.)
 - [ ] Survives a 24 h soak with Wi-Fi up, no kernel warnings that matter, and no memory exhaustion.
-- [ ] Restoring stock from the backup is written down and has been tried at least once (on the partition table and one partition).
+- [ ] Restoring stock from the backup is written down and has been tried at least once (on the partition table and one partition). (Partition table: stock GPT rolled back and re-applied from the running system during stage B, both verified byte for byte; restoring a partition image not yet tried.)
 
 ### Access
 
@@ -90,7 +90,7 @@ Each item is checked on the device, not inferred from logs. `[x]` means verified
 4. **Done.** Our kernel: `barni2000/7.3/develop` built here, booting through lk2nd.
 5. **Done.** Arch Linux ARM root filesystem, with USB networking on first boot.
 6. **In progress.** Wi-Fi, with the rekey problem checked on 7.3 and the patch carried forward if it is still needed. (Still needed; `0101` accepted; join waits on the PSK.)
-7. **Prepared, awaiting approval** (`streams/stage-b/RUNBOOK.md`). Stage B repartition (root grows to about 6.7 GiB, for the models), then the voice pipeline: recognition, synthesis, the ai& client, and the full-screen app.
+7. **Repartition done 2026-10-31** (root 6.6 GiB, 5.3 GiB free; `streams/stage-b/`); voice pipeline in progress. Stage B repartition (root grows to about 6.7 GiB, for the models), then the voice pipeline: recognition, synthesis, the ai& client, and the full-screen app.
 8. **In progress** (see the table). Hardware, roughly easiest first: buttons, sensors, backlight, touch, GPU, video decode, Bluetooth, speaker, microphones, echo cancellation, camera.
 9. 24 h soak and the recovery drill.
 
@@ -108,6 +108,7 @@ Each item is checked on the device, not inferred from logs. `[x]` means verified
 - 2026-10-30: Speaker tuning is a firmware file built from Lenovo's GPL `tas5782m.h` at image build time; the driver refuses to play without it, and its volume is capped at 0 dB (stock maximum).
 - 2026-10-30: Regulatory domain JP comes from a service when the Wi-Fi phy registers, not a cfg80211 module option (which ath10k's US hint overrides).
 - 2026-10-30: `kernel/build.sh` resets the tree and applies the whole patch series on every build (overlapping patches had been applied twice); `deploy-to-device.sh` confirms a reboot by boot ID (`adb reboot` does not always reboot).
+- 2026-10-31: Stage B done: GPT now has 29 partitions (p1-p23 unchanged, `system` 6.80 GiB, `persist`/`syscfg`/`mcfg`/`apdp`/`msadp` moved to the end, 22 Android partitions dropped). aboot and lk2nd boot it. Root grown online to 6.6 GiB.
 - 2026-10-31: Wake word is "Hey Straylight", after the household system the Hub 500 panels belong to. Chosen over anything built on "AI" (constant false triggers in English and Japanese speech) and over a coined name. To verify on the device: recall per language and false triggers per hour on English, Japanese and Mandarin speech.
 - 2026-10-30: Repositories are public: `jethac/lenovo-thinksmart-view` and `jethac/thinksmart-view-hal`. No firmware, device captures or secrets in them.
 
