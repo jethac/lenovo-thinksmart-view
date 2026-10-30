@@ -13,7 +13,7 @@ Each item is checked on the device, not inferred from logs. `[x]` means verified
 - [x] Boots unattended from power-on to a login. No fastboot, EDL, or button presses. (Lenovo logo, lk2nd, ai& splash, about 15 s to USB networking.)
 - [x] `uname -m` is `aarch64` and `uname -r` is 7.x. (`7.3.0`, msm8953-mainline `barni2000/7.3/develop` plus `kernel/patches/`.)
 - [ ] One full-screen app owns the display (no desktop environment): it shows the ai& idle screen and the conversation. The ai& Plymouth theme stays the boot splash. (Splash and the accelerometer-levelled idle screen work; the conversation app does not exist yet.)
-- [ ] Voice in and out on the device, in English, Japanese and Mandarin: Qwen3-ASR for recognition, an on-device speech synthesiser for replies, text sent to ai&. Both models fit in RAM next to the system, with headroom. (Qwen3-ASR Q4_K_M runs on the device at about 2x real time, peak about 1 GB; synthesis not chosen yet; see `streams/asr/`.)
+- [ ] Voice in and out on the device, in English, Japanese and Mandarin: Qwen3-ASR for recognition, an on-device speech synthesiser for replies, text sent to ai&. Both models fit in RAM next to the system, with headroom. (Qwen3-ASR Q4_K_M with a Q8_0 conv stem runs at 1.3-1.6x real time: a 2.5 s English command takes 4.0 s, peak about 1 GB; synthesis not chosen yet; see `streams/asr/NOTES.md`.)
 - [ ] Survives a 24 h soak with Wi-Fi up, no kernel warnings that matter, and no memory exhaustion.
 - [ ] Restoring stock from the backup is written down and has been tried at least once (on the partition table and one partition).
 
@@ -113,7 +113,7 @@ Each item is checked on the device, not inferred from logs. `[x]` means verified
 ## Open questions
 
 - Which speech synthesiser covers English, Japanese and Mandarin at usable speed on the A53 cores, and how much RAM do recognition and synthesis need together?
-- Can the Adreno 506 (OpenGL ES compute) beat the eight CPU cores on the matrix multiplies that make up about 83 % of Qwen3-ASR's time? (`streams/gpu-compute/`)
+- How far can Qwen3-ASR latency fall on the CPU: conv stem during speech, speculative decoding, a shorter prompt, a lighter output head? (`streams/asr/NOTES.md`)
 - Which msm8953 patches on `7.1.3/main` (381 commits not on the 7.3 branch) are genuinely missing from `barni2000/7.3/develop`, and do any matter for this device?
 - Does the lens cover cut power to the camera, or only report its state? Does closed read as 1?
 - Should fixes made here go upstream (msm8953-mainline, ath10k, ASoC, media) and to `rickx/ubuntu-thinksmart`?
@@ -122,4 +122,5 @@ Answered:
 - The side USB-C port carries data in EDL, from a USB-A host (EDL, `printgpt`, read-back and both writes done over it).
 - The `ath10k` rekey patch is still needed on 7.3: no upstream fix (`0101`).
 - CAMSS for MSM8953 is enough for the S5KC505A: raw frames captured with only a sensor driver and board nodes.
+- The Adreno 506 does not help Qwen3-ASR: about 14 GFLOP/s FP32 in OpenGL ES 3.1 compute, half the CPU Q8_0 rate; no OpenCL, no Vulkan (`streams/gpu-compute/NOTES.md`).
 - Switches: the lens cover is GPIO 87 (`SW_CAMERA_LENS_COVER`); the mic mute switch is not fitted on this unit.

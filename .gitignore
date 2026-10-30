@@ -45,3 +45,4 @@ streams/camera/work/
 streams/camera/downloads/
 streams/*/results/
 kernel/patches-wip/
+streams/*/build/
