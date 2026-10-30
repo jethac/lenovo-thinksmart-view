@@ -108,6 +108,7 @@ Each item is checked on the device, not inferred from logs. `[x]` means verified
 - 2026-10-30: Speaker tuning is a firmware file built from Lenovo's GPL `tas5782m.h` at image build time; the driver refuses to play without it, and its volume is capped at 0 dB (stock maximum).
 - 2026-10-30: Regulatory domain JP comes from a service when the Wi-Fi phy registers, not a cfg80211 module option (which ath10k's US hint overrides).
 - 2026-10-30: `kernel/build.sh` resets the tree and applies the whole patch series on every build (overlapping patches had been applied twice); `deploy-to-device.sh` confirms a reboot by boot ID (`adb reboot` does not always reboot).
+- 2026-10-31: Wake word is "Hey Straylight", after the household system the Hub 500 panels belong to. Chosen over anything built on "AI" (constant false triggers in English and Japanese speech) and over a coined name. To verify on the device: recall per language and false triggers per hour on English, Japanese and Mandarin speech.
 - 2026-10-30: Repositories are public: `jethac/lenovo-thinksmart-view` and `jethac/thinksmart-view-hal`. No firmware, device captures or secrets in them.
 
 ## Open questions
