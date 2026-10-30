@@ -1,5 +1,5 @@
 #!/bin/bash
-# Idle screen for the ThinkSmart View before any desktop exists: the ai& wordmark,
+# Idle screen for the ThinkSmart View until the voice app takes the display: the ai& wordmark,
 # white on black. The static frame goes straight to the fbdev framebuffer; then
 # tsv-idle-rotate takes over through DRM/KMS and keeps the wordmark upright by
 # the accelerometer (README "Boot splash and idle screen").

@@ -6,7 +6,7 @@ Adreno 506 at up to 650 MHz, `msm` DRM driver with freedreno in Mesa. Needs the 
 
 ## Done when
 
-Hyprland runs with hardware GL, the GPU scales frequency under load, and glmark2 or similar completes without hangs.
+The full-screen app renders with hardware GL/GLES, the GPU scales frequency under load, and glmark2 or similar completes without hangs.
 
 ## Known so far
 
@@ -21,7 +21,7 @@ Hyprland runs with hardware GL, the GPU scales frequency under load, and glmark2
 ## Questions
 
 - Does 7.3 have GPU devfreq and the OPP table for msm8953? Max frequency under mainline?
-- Which GLES and desktop GL versions freedreno exposes on a506 in current Mesa, and whether Hyprland's requirements are met.
+- Which GLES and desktop GL versions freedreno exposes on a506 in current Mesa, and what the full-screen app can rely on.
 - Known a5xx regressions in recent Mesa.
 
 ## Output

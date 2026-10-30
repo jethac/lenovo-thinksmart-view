@@ -1,6 +1,6 @@
 # Flashing: stage A
 
-First Linux boot on the ThinkSmart View (`HUA0BMNX`) **without changing the partition table**. lk2nd goes into `boot`, our image into `system`. Everything else on the eMMC stays as it is: GPT, bootloaders, `devinfo`, `persist`, `modemst*`, `fsg`, `modem`, `dsp`, `userdata`. Repartitioning for Omarchy is stage B, done later from the running system.
+First Linux boot on the ThinkSmart View (`HUA0BMNX`) **without changing the partition table**. lk2nd goes into `boot`, our image into `system`. Everything else on the eMMC stays as it is: GPT, bootloaders, `devinfo`, `persist`, `modemst*`, `fsg`, `modem`, `dsp`, `userdata`. Repartitioning (root grows to about 6.7 GiB for the speech models) is stage B, done later from the running system.
 
 Run every command from `/home/jethac/Projects/lenovo-8`. `EDL` below means:
 

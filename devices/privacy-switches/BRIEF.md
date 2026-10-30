@@ -6,7 +6,7 @@ The camera lens cover switch (GPIO 87, `SW_CAMERA_LENS_COVER`) and the microphon
 
 ## Done when
 
-Both switch states are readable from userspace, the desktop shows them, the camera stack refuses to stream with the cover closed (or the hardware makes that moot), and capture is muted when the mic switch is on.
+Both switch states are readable from userspace, the full-screen app shows them, the camera stack refuses to stream with the cover closed (or the hardware makes that moot), and capture is muted when the mic switch is on.
 
 ## Known so far
 

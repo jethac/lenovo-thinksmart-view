@@ -1,11 +1,11 @@
 [Unit]
-Description=ai& idle screen, kept upright by the accelerometer (until a desktop exists)
+Description=ai& idle screen, kept upright by the accelerometer (until the voice app takes the display)
 Documentation=file:/usr/local/sbin/tsv-idle-screen
 # Started by udev when fb0 appears (/etc/udev/rules.d/90-tsv-idle-screen.rules),
 # so it waits for nothing and holds up nothing when the panel never probes.
 ConditionPathExists=/dev/fb0
-# Hand-over: once a display manager is enabled (Omarchy enables one as
-# display-manager.service), this never starts again. Conflicts= is not used:
+# Hand-over: once anything is enabled as display-manager.service (the voice
+# app could be), this never starts again. Conflicts= is not used:
 # a late udev-triggered start would then stop the display manager.
 ConditionPathExists=!/etc/systemd/system/display-manager.service
 # After Plymouth has let go of the display (it holds DRM master until then).

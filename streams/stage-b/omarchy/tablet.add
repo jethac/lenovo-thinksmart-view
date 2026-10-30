@@ -1,0 +1,4 @@
+# Added for the ThinkSmart View.
+adobe-source-han-sans-jp-fonts  Japanese text (Asia/Tokyo), instead of all of noto-fonts-cjk
+squeekboard                     on-screen keyboard; shows itself when a text field takes focus (input-method-v2 / text-input-v3)
+iio-sensor-proxy                accelerometer (BMA253) and light sensor for auto-rotation and brightness

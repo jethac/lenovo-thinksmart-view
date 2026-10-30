@@ -1,0 +1,117 @@
+diff --git i/install/arm/pacman.sh w/install/arm/pacman.sh
+index 7857935d..96c3c5b8 100644
+--- i/install/arm/pacman.sh
++++ w/install/arm/pacman.sh
+@@ -34,8 +34,10 @@ if grep -q '^\[multilib\]' "$conf"; then
+   sed -i '/^\[multilib\]/,/^Include/d' "$conf"
+ fi
+ 
+-# Same for Omarchy's own repository, which is not built for aarch64.
+-if grep -q '^\[omarchy\]' "$conf"; then
++# Omarchy's own repository: pkgs.omarchy.org has published an aarch64 tree
++# since this was written (omarchy.db, signed packages). Keep it when it is
++# configured for aarch64; only an x86 leftover pointing elsewhere is removed.
++if grep -q '^\[omarchy\]' "$conf" && ! grep -q 'pkgs.omarchy.org/.*\(\$arch\|aarch64\)' "$conf"; then
+   echo "Removing [omarchy] from $conf: pkgs.omarchy.org has no aarch64 tree."
+   sed -i '/^\[omarchy\]/,/^Server/d' "$conf"
+ fi
+diff --git i/install/arm/settings.sh w/install/arm/settings.sh
+index 4ced6305..29492c35 100755
+--- i/install/arm/settings.sh
++++ w/install/arm/settings.sh
+@@ -92,6 +92,14 @@ while IFS= read -r -d '' file; do
+       say "skip (boot chain, not ours on ARM): /etc/$rel"
+       continue
+       ;;
++    plymouth/plymouthd.conf)
++      # The board's image owns the splash settings (theme, DeviceScale,
++      # DeviceTimeout). Omarchy's theme is still installed and selectable.
++      if [[ -f $root/etc/plymouth/plymouthd.conf ]]; then
++        say "skip (board's own splash settings): /etc/$rel"
++        continue
++      fi
++      ;;
+   esac
+   place 644 "$file" "/etc/$rel"
+ done < <(find "$OMARCHY_PATH/etc" -type f -print0 | sort -z)
+diff --git i/install/config/docker.sh w/install/config/docker.sh
+index 1dc17e81..9bf28d66 100644
+--- i/install/config/docker.sh
++++ w/install/config/docker.sh
+@@ -1,6 +1,11 @@
+ # Record the docker group for provisioning first-boot user creation and factory reset,
+ # then grant it directly when the install user already exists (deferred-provisioning
+ # installs create the user at first boot instead).
++if ! getent group docker >/dev/null; then
++  echo "docker is not installed; skipping the docker group."
++  return 0 2>/dev/null || exit 0
++fi
++
+ provisioning_dir="${OMARCHY_PROVISIONING_DIR:-/var/lib/omarchy/provisioning}"
+ mkdir -p "$provisioning_dir"
+ grep -qxF docker "$provisioning_dir/groups" 2>/dev/null || echo docker >>"$provisioning_dir/groups"
+diff --git i/install/config/enable-services.sh w/install/config/enable-services.sh
+index b7e2ba8b..8bddfd1e 100644
+--- i/install/config/enable-services.sh
++++ w/install/config/enable-services.sh
+@@ -1,20 +1,31 @@
+ # Enable services only. Installs are followed by reboot, so don't start/reload
+ # daemons mid-install. UFW and hardware-gated services stay in their own scripts.
+-systemctl enable cups.service
+-systemctl enable cups-browsed.service
+-systemctl enable avahi-daemon.service
+-systemctl enable linux-modules-cleanup.service
+-systemctl enable docker.socket
+-systemctl enable systemd-resolved.service
+-systemctl enable NetworkManager.service
++#
++# A trimmed package set (the ThinkSmart View leaves out cups, docker and
++# kernel-modules-hook) has no unit file for some of these, and this leaf runs
++# under bash -e, so a missing unit would abort omarchy-apply-system here.
++enable_if_present() {
++  if systemctl cat "$1" >/dev/null 2>&1; then
++    systemctl enable "$1"
++  else
++    echo "$1 is not installed; not enabling it."
++  fi
++}
++enable_if_present cups.service
++enable_if_present cups-browsed.service
++enable_if_present avahi-daemon.service
++enable_if_present linux-modules-cleanup.service
++enable_if_present docker.socket
++enable_if_present systemd-resolved.service
++enable_if_present NetworkManager.service
+ # Don't let network-online.target (pulled in by cups-browsed) hold up
+ # graphical.target waiting for DHCP/Wi-Fi association. Nothing in the session
+ # needs to block on the network. Mirrors the systemd-networkd-wait-online mask
+ # in install/hardware/network.sh.
+ systemctl mask NetworkManager-wait-online.service
+-systemctl enable power-profiles-daemon.service
+-systemctl enable sddm.service
++enable_if_present power-profiles-daemon.service
++enable_if_present sddm.service
+ # Kill one runaway app scope instead of letting reclaim thrashing take the
+ # whole session down. [Install] pulls in systemd-oomd.socket via Also=, which
+ # is what the user manager reports app.slice candidacy over.
+-systemctl enable systemd-oomd.service
++enable_if_present systemd-oomd.service
+diff --git i/install/hardware/arm/vulkan.sh w/install/hardware/arm/vulkan.sh
+index 097ec127..69719682 100644
+--- i/install/hardware/arm/vulkan.sh
++++ w/install/hardware/arm/vulkan.sh
+@@ -15,6 +15,14 @@ case "$(omarchy-hw-platform)" in
+     omarchy_arm_pkg_add_available vulkan-broadcom
+     ;;
+   generic-aarch64)
++    # A board with a real display GPU that Mesa has no Vulkan driver for
++    # (Adreno 5xx under msm/freedreno: Turnip starts at a6xx). Installing
++    # lavapipe there would make GTK4 pick Vulkan and render on the CPU.
++    for card in /sys/class/drm/card[0-9]; do
++      [[ $(basename "$(readlink -f "$card/device/driver" 2>/dev/null)") == msm ]] || continue
++      echo "msm GPU without a Vulkan driver: no Vulkan ICD installed."
++      exit 0
++    done
+     # A VM with no accelerated GPU: virtio-gpu with Venus, and the software
+     # rasterizer as the fallback that keeps Hyprland able to start at all.
+     omarchy_arm_pkg_add_available vulkan-virtio vulkan-swrast

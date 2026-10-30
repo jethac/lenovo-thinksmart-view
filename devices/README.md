@@ -2,7 +2,7 @@
 
 One directory per piece of hardware on the ThinkSmart View CD-18781Y (serial `HUA0BMNX`). Each directory has a `BRIEF.md` that says what to find out about that device. The findings go next to it.
 
-Read [`../GOAL.md`](../GOAL.md) first. It defines what "working" means for each device and what is out of scope.
+Read [`../GOAL.md`](../GOAL.md) first. The analyses were written while the plan still included Omarchy (Hyprland). That plan was dropped on 2026-10-30; where an analysis says Hyprland or the desktop, read it as the single full-screen app. It defines what "working" means for each device and what is out of scope.
 
 ## What "stock" means on this unit
 

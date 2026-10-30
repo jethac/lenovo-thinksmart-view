@@ -95,5 +95,5 @@ RSS 2.6 MB.
 - Confirm the slope interrupt with a real turn; if it never fires, drop it and keep the poll.
 - Drawing cost will fall once cpufreq reaches 1.8 GHz. NEON or a cached shadow buffer would cut
   it further, if needed.
-- Omarchy's auto-rotate (`iio-sensor-proxy`) will want the accelerometer too. The idle screen no
-  longer starts once a display manager is enabled, so they do not overlap.
+- The voice app will want the accelerometer too (to rotate its own UI). It should take over the
+  rotation logic from `tsv-idle-rotate` rather than read the sensor a second time.

@@ -1,0 +1,61 @@
+# Packages from omarchy-arm install/omarchy-base.packages (+ packages.extra) left
+# out on the ThinkSmart View (7.28 GiB eMMC, 2 GB RAM, 800x1280 touch, no keyboard).
+# Format: <package>  <reason>. Sizes are installed sizes with exclusive dependencies.
+
+# x86 emulation and heavy desktop apps
+qemu-user-static-binfmt  550 MiB qemu-user-static; x86 emulation, no use here
+libreoffice-fresh        466 MiB; office suite, not a tablet job (view PDFs with evince)
+obsidian                 432 MiB with its Electron runtime
+obs-studio               166 MiB; screen recording/streaming, no hardware encoder path on Adreno 506
+kdenlive                 96 MiB; video editor
+pinta                    20 MiB + .NET runtime
+dotnet-runtime           only needed by pinta
+aether                   178 MiB with webkit2gtk-4.1; theme designer
+localsend                70 MiB; Flutter app
+cliamp                   41 MiB; terminal music player
+herdr                    terminal multiplexer (pulls a Zig toolchain on aarch64); not needed
+tobi-try                 dev helper
+moonlight-qt             game streaming client
+gpu-screen-recorder      needs a GPU encoder (VAAPI/NVENC); none on this SoC
+
+# development toolchains and services
+clang                    116 MiB
+llvm                     87 MiB
+docker                   123 MiB daemon on a 2 GB machine
+docker-buildx            66 MiB
+docker-compose           29 MiB
+lazydocker               13 MiB
+ufw-docker               only meaningful with docker; firewall.sh skips its rules when absent
+mariadb-libs             29 MiB; for ruby/python database gems
+postgresql-libs          12 MiB; same
+python-poetry-core       Python build backend
+tree-sitter-cli          8 MiB; nvim parser builds
+lua51                    nvim plugin builds
+luarocks                 nvim plugin builds
+ruby                     21 MiB; dev environment
+mise-bin                 128 MiB; installs the AI CLIs and dev tools. Omarchy gates every mise step on the command existing
+omarchy-nvim             56 MiB Omarchy Neovim config (neovim itself stays)
+
+# printing, external displays, PC hardware
+cups                     printing
+cups-browsed             printing
+cups-filters             printing
+cups-pdf                 printing
+system-config-printer    printing
+ddcutil                  DDC/CI for external monitors; the panel is DSI
+bolt                     Thunderbolt
+asdcontrol               Apple Studio Display
+kernel-modules-hook      keeps modules of the running kernel across linux package upgrades; the kernel here is not a package
+gvfs-nfs                 network filesystems in Nautilus
+gvfs-smb                 network filesystems in Nautilus
+gvfs-mtp                 phones over USB; the port is device-mode only
+
+# input and OCR replaced or not useful on a touch tablet
+fcitx5                   input method framework; conflicts with the on-screen keyboard (both are input methods). Add back with fcitx5-mozc if a keyboard is attached
+fcitx5-gtk               see fcitx5
+fcitx5-qt                see fcitx5
+tesseract                OCR text extraction from screenshots
+tesseract-data-eng       OCR data
+
+# fonts
+noto-fonts-cjk           299 MiB; replaced by adobe-source-han-sans-jp-fonts (32 MiB) for Japanese

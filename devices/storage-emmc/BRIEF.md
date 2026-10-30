@@ -22,7 +22,7 @@ There is a final partition layout for the Arch Linux ARM system with every firmw
 ## Questions
 
 - Which dropped partitions does `aboot` or TrustZone read at boot? (For example `keymaster`, `cmnlib`, `lksecapp`, `devcfg`, `dip`, `mdtp`.) The rickx layout boots, but check whether anything degrades.
-- Is it better to keep the stock GPT and use `userdata` (about 2 GiB) plus `system` (1.5 GiB) separately, or to merge as rickx does? Size it against the Omarchy package list.
+- Is it better to keep the stock GPT and use `userdata` (about 2 GiB) plus `system` (1.5 GiB) separately, or to merge as rickx does? Size it against the speech models (Qwen3-ASR, a speech synthesiser) and the base system.
 - Where should `/boot` (lk2nd reads `extlinux.conf`) live, and which filesystem types does lk2nd read?
 
 ## Hazards

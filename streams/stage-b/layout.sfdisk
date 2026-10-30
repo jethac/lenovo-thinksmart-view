@@ -1,0 +1,38 @@
+label: gpt
+label-id: 98101B32-BBE2-4BF2-A06E-2BB33D000C20
+device: /dev/mmcblk0
+unit: sectors
+first-lba: 34
+last-lba: 15269854
+table-length: 52
+sector-size: 512
+
+/dev/mmcblk0p1 : start=      131072, size=      172032, type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7, uuid=60AD5CCB-10A2-54B1-CF33-6FAE234BCCDB, name="modem", attrs="GUID:60"
+/dev/mmcblk0p2 : start=      393216, size=           2, type=57B90A16-22C9-E33B-8F5D-0E81686A68CB, uuid=6F59B6E5-8505-32E7-65E4-6040D93A5119, name="fsc"
+/dev/mmcblk0p3 : start=      393224, size=          16, type=2C86E742-745E-4FDD-BFD8-B6A7AC638772, uuid=936687BE-2024-5F1A-173D-D60A6D31DF9E, name="ssd"
+/dev/mmcblk0p4 : start=      393240, size=        1024, type=DEA0BA2C-CBDD-4805-B4F9-F428251C3E98, uuid=ACF0CC1D-B8EC-00E5-29AB-A2D13BE3F13D, name="sbl1"
+/dev/mmcblk0p5 : start=      394264, size=        1024, type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7, uuid=BC4C7527-6247-41F6-4574-998203E709FC, name="sbl1bak"
+/dev/mmcblk0p6 : start=      395288, size=        1024, type=098DF793-D712-413D-9D4E-89D711772228, uuid=D615B422-2383-73A1-8B89-475B85ED8D45, name="rpm"
+/dev/mmcblk0p7 : start=      396312, size=        1024, type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7, uuid=0F35DDD0-8AF7-A8DE-61A1-D6A3B389EBD4, name="rpmbak"
+/dev/mmcblk0p8 : start=      397336, size=        4096, type=A053AA7F-40B8-4B1C-BA08-2F68AC71A4F4, uuid=515D84C4-E273-FA17-69D1-A5A52A9B70C0, name="tz"
+/dev/mmcblk0p9 : start=      401432, size=        4096, type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7, uuid=16F1D240-4191-E32A-6173-60792BACBE1C, name="tzbak"
+/dev/mmcblk0p10 : start=      405528, size=         512, type=F65D4B16-343D-4E25-AAFC-BE99B6556A6D, uuid=DD0FF061-37FF-7340-18FB-7FD65E6984F4, name="devcfg"
+/dev/mmcblk0p11 : start=      406040, size=         512, type=F65D4B16-343D-4E25-AAFC-BE99B6556A6D, uuid=A8345DE4-96BC-A4DF-9DB2-5581D158D398, name="devcfgbak"
+/dev/mmcblk0p12 : start=      406552, size=       32768, type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7, uuid=530DE999-DBFB-459F-E838-9C8C228508B3, name="dsp"
+/dev/mmcblk0p13 : start=      439320, size=        3072, type=EBBEADAF-22C9-E33B-8F5D-0E81686A68CB, uuid=A4B483CC-2EFB-4A2D-1BBE-EC402C0AFDB5, name="modemst1"
+/dev/mmcblk0p14 : start=      442392, size=        3072, type=0A288B1F-22C9-E33B-8F5D-0E81686A68CB, uuid=3D7C7FEA-4BF4-3EC1-A27D-69ECFC7A70EE, name="modemst2"
+/dev/mmcblk0p15 : start=      524288, size=          64, type=20A0C19C-286A-42FA-9CE7-F64C3226A794, uuid=505322F5-61E6-CACC-F2F2-13A20A240724, name="DDR", attrs="GUID:60"
+/dev/mmcblk0p16 : start=      524352, size=        3072, type=638FF8E2-22C9-E33B-8F5D-0E81686A68CB, uuid=FDEDBE8C-C152-9AEF-7912-B93EBBB3B9E9, name="fsg", attrs="GUID:60"
+/dev/mmcblk0p17 : start=      527424, size=          32, type=303E6AC3-AF15-4C54-9E9B-D9A8FBECF401, uuid=D9BC5B39-6469-F361-F209-AE2FBD275F8C, name="sec", attrs="GUID:60"
+/dev/mmcblk0p18 : start=      655360, size=       22528, type=20117F86-E985-4357-B9EE-374BC1D8487D, uuid=FAB9CEA4-4E4D-9F6E-4D55-356735FF7FAD, name="splash"
+/dev/mmcblk0p19 : start=      786432, size=        2048, type=400FFDCD-22E0-47E7-9A23-F16ED9382388, uuid=F40CE733-595E-A1DE-B383-BD1C8E81CF9F, name="aboot", attrs="GUID:60"
+/dev/mmcblk0p20 : start=      788480, size=        2048, type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7, uuid=7EA7C322-25C4-1460-214B-F39DD2F1E34C, name="abootbak", attrs="GUID:60"
+/dev/mmcblk0p21 : start=      790528, size=       65536, type=20117F86-E985-4357-B9EE-374BC1D8487D, uuid=ED487EB4-B7B5-41F1-65BB-26A91DBFDEDF, name="boot", attrs="GUID:60"
+/dev/mmcblk0p22 : start=      856064, size=       65536, type=9D72D4E4-9958-42DA-AC26-BEA7A90B0434, uuid=514F7F4D-78B7-1E00-C330-0E6BE479545A, name="recovery", attrs="GUID:60"
+/dev/mmcblk0p23 : start=      921600, size=        2048, type=1B81E7E6-F50D-419B-A739-2AEEF8DA3335, uuid=C4AFE767-D786-9049-6DA1-48EF90685EE9, name="devinfo", attrs="GUID:60"
+/dev/mmcblk0p24 : start=      923648, size=    14264320, type=97D7B011-54DA-4835-B3C4-917AD6E73D74, uuid=B484CF28-6BB0-6E2A-542E-AF75CF177942, name="system", attrs="GUID:60"
+/dev/mmcblk0p25 : start=    15187968, size=       65536, type=6C95E238-E343-4BA8-B489-8681ED22AD0B, uuid=F15E70E4-E326-B3FA-55D7-4EF82DDD7412, name="persist"
+/dev/mmcblk0p26 : start=    15253504, size=        1024, type=098DF793-D712-413D-9D4E-89D711772228, uuid=292972D9-0EEA-14DC-C9B9-2D838FB70567, name="syscfg"
+/dev/mmcblk0p27 : start=    15255552, size=        8192, type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7, uuid=187B3877-9B1F-6451-B0FF-5A1B8B3DA995, name="mcfg"
+/dev/mmcblk0p28 : start=    15263744, size=         512, type=E6E98DA2-E22A-4D12-AB33-169E7DEAA507, uuid=BA1A871F-A8FB-EE86-4D76-AB7E3D4407D2, name="apdp"
+/dev/mmcblk0p29 : start=    15265792, size=         512, type=ED9E8101-05FA-46B7-82AA-8D58770D200B, uuid=49AB44A0-54A7-E65E-3D83-A66D48E7C225, name="msadp"

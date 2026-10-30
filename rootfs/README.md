@@ -137,9 +137,10 @@ This is what that lk2nd does:
     and `--populate archlinuxarm`.
   - `tsv-growroot.service` grows root.
 - **Network stack.** NetworkManager handles Wi-Fi, rather than iwd plus systemd-networkd.
-  Omarchy uses NetworkManager: its installer (`install/hardware/network.sh`) disables iwd and
-  every `systemd-networkd` unit. Anything built on networkd would be switched off when Omarchy
-  goes on in milestone 7. `NetworkManager-wait-online` is masked, as Omarchy does.
+  It was chosen when Omarchy (which uses NetworkManager and disables iwd and `systemd-networkd`)
+  was still planned; Omarchy has since been dropped (`GOAL.md`), and NetworkManager stays
+  because it handles roaming across the home mesh and stores credentials root-only.
+  `NetworkManager-wait-online` is masked so boot never waits for Wi-Fi.
 
 ## Firmware
 
@@ -428,7 +429,7 @@ image with a dummy PSK.
 ## Boot splash and idle screen
 
 The screen shows the **ai&** wordmark from power-on (as soon as the panel is up in the
-initramfs) until a desktop exists: first as a Plymouth boot splash, then, once the system is up,
+initramfs) until the voice app takes the display: first as a Plymouth boot splash, then, once the system is up,
 as a still image on the framebuffer. White wordmark on pure black (`#000000`).
 
 | | |
@@ -443,7 +444,7 @@ as a still image on the framebuffer. White wordmark on pure black (`#000000`).
 
 - **Package.** `plymouth` from Arch Linux ARM `extra` (26.134.222). It pulls in cairo, pango,
   fontconfig, freetype, harfbuzz, libx11, libxkbcommon, xkeyboard-config and `adwaita-fonts`,
-  all of which Omarchy needs anyway. Root grows by about **76 MiB** of used blocks (28 packages, 61 MiB installed size; xkeyboard-config 10 MiB, libx11 10 MiB, adwaita-fonts 7 MiB and harfbuzz 6 MiB are the largest).
+  most of which the voice app's text rendering will use too. Root grows by about **76 MiB** of used blocks (28 packages, 61 MiB installed size; xkeyboard-config 10 MiB, libx11 10 MiB, adwaita-fonts 7 MiB and harfbuzz 6 MiB are the largest).
 - **Theme `aiand`** (`scripts/overlay/usr/share/plymouth/themes/aiand/`), script plugin:
   - `aiand.script`: black background, `logo.png` centred, and a 160x3 progress line 110 px under
     the wordmark (track white at 20 % opacity, fill at 75 %, never moves backwards). The line is
@@ -458,8 +459,8 @@ as a still image on the framebuffer. White wordmark on pure black (`#000000`).
   reports no physical size), `DeviceTimeout=8`, `ShowDelay=0`.
 - **Initramfs.** `HOOKS=(base udev modconf plymouth tsv-subpart fsck)`, now set in
   `/etc/mkinitcpio.conf.d/zz-tsv-hooks.conf`. That drop-in is read last, so a later drop-in
-  (Omarchy writes `omarchy_hooks.conf` with its own `HOOKS=`, without `tsv-subpart`) cannot
-  remove the hook that finds root. `plymouth` comes after `udev`: by then `msm`, the panel and
+  (any package that writes its own `HOOKS=`, without `tsv-subpart`) cannot remove the hook
+  that finds root. `plymouth` comes after `udev`: by then `msm`, the panel and
   WLED (`MODULES`) are loaded and udev has created `/dev/dri/card0`. The initramfs grows from
   10.9 MiB to **13.4 MiB** (14090626 bytes; 53 MiB uncompressed) (zstd -19); kernel + DTB + initramfs stay well inside lk2nd's 50 MiB.
   `build-rootfs.sh` fails the build if `plymouth-set-default-theme` is not `aiand`, or if
@@ -484,7 +485,7 @@ as a still image on the framebuffer. White wordmark on pure black (`#000000`).
 
 ### Idle screen (`tsv-idle-screen`)
 
-There is no desktop until Omarchy (milestone 7), so after boot the framebuffer would show a
+There is no desktop on this device (see `GOAL.md`), and until the voice app exists the framebuffer would show a
 text login on tty1. Instead it shows the same wordmark (`assets/preview-idle-800x1280.png`),
 kept level by the accelerometer: turn the tablet and the wordmark turns the other way on the
 panel. Two parts: a shell script that unbinds fbcon, writes a pre-rendered static frame to
@@ -564,8 +565,8 @@ missing, disabled or cannot start, the static frame stays.
   journalctl -u tsv-idle-screen                # angle at start, each turn of 5 degrees or more
   ```
 
-- **Hand-over to a desktop.** `ConditionPathExists=!/etc/systemd/system/display-manager.service`:
-  once a display manager is enabled (Omarchy enables SDDM as `display-manager.service`), the
+- **Hand-over.** `ConditionPathExists=!/etc/systemd/system/display-manager.service`:
+  if anything is ever enabled as `display-manager.service` (the voice app could be), the
   idle screen no longer starts at all, and it is ordered `Before=display-manager.service`.
   `Conflicts=display-manager.service` is deliberately not used: a late, udev-triggered start
   would then stop the display manager. If a compositor is started some other way (for example
@@ -575,11 +576,9 @@ missing, disabled or cannot start, the static frame stays.
 - **Tests without hardware.** `TSV_IDLE_SYSFS`, `TSV_IDLE_DEV`, `TSV_IDLE_DIR`,
   `TSV_IDLE_STATE` and `TSV_IDLE_FB` point the script at a fake sysfs and `/dev`.
 
-### After Omarchy
+### Keeping the theme
 
-Omarchy installs its own theme (on the laptop: `/usr/share/omarchy/default/plymouth/omarchy.plymouth`,
-copied to `/usr/share/plymouth/themes/omarchy` and selected with `plymouth-set-default-theme`).
-To put `aiand` back:
+If a package ever changes the default Plymouth theme, put `aiand` back with:
 
 ```sh
 sudo plymouth-set-default-theme -R aiand     # -R runs mkinitcpio -P (the tsv preset)

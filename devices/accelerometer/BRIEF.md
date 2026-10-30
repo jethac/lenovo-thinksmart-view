@@ -6,11 +6,11 @@ Bosch BMA253 at `0x18` on the bit-banged `i2c-sensors` bus (`compatible = "bosch
 
 ## Done when
 
-Screen rotation follows the device orientation in all four directions under Hyprland, with the right mount matrix.
+Screen rotation follows the device orientation in all four directions in the full-screen app (and the idle screen), with the right mount matrix.
 
 ## Known so far
 
-- rickx: works with `iio-sensor-proxy`, plus a rotation daemon calling `kscreen-doctor` (Plasma only; Hyprland needs its own).
+- rickx: works with `iio-sensor-proxy`, plus a rotation daemon calling `kscreen-doctor` (Plasma only).
 
 ## Stock capture
 

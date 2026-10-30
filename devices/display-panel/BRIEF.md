@@ -6,7 +6,7 @@ The 8 inch 800x1280 DSI video-mode panel on `&mdss_dsi0`, 4 lanes. Stock identif
 
 ## Done when
 
-Native 800x1280 under Hyprland, correct orientation, no tearing or flicker, survives screen off and on.
+Native 800x1280 for the full-screen app (DRM/KMS), correct orientation, no tearing or flicker, survives screen off and on.
 
 ## Known so far
 
