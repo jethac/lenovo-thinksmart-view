@@ -485,18 +485,24 @@ as a still image on the framebuffer. White wordmark on pure black (`#000000`).
 ### Idle screen (`tsv-idle-screen`)
 
 There is no desktop until Omarchy (milestone 7), so after boot the framebuffer would show a
-text login on tty1. Instead it shows the same wordmark (`assets/preview-idle-800x1280.png`).
-This is the lightest thing that works: a shell script, two pre-rendered raw frames, and the
-fbdev emulation that is already in the kernel (`CONFIG_DRM_FBDEV_EMULATION=y`,
-`CONFIG_FRAMEBUFFER_CONSOLE=y`). No compositor, no DRM client, nothing left running.
+text login on tty1. Instead it shows the same wordmark (`assets/preview-idle-800x1280.png`),
+kept level by the accelerometer: turn the tablet and the wordmark turns the other way on the
+panel. Two parts: a shell script that unbinds fbcon, writes a pre-rendered static frame to
+`/dev/fb0` (`CONFIG_DRM_FBDEV_EMULATION=y`) and sets the backlight, and a small C daemon,
+`tsv-idle-rotate`, that then draws the rotating wordmark through DRM/KMS. If the daemon is
+missing, disabled or cannot start, the static frame stays.
 
 - **Trigger.** `/etc/udev/rules.d/90-tsv-idle-screen.rules` adds `SYSTEMD_WANTS` for
   `tsv-idle-screen.service` when `fb0` appears (udev's coldplug replays this at boot). If the
   panel never probes, there is no `fb0`, the unit is never pulled in, and nothing waits for it.
   The unit has no `[Install]` section; it is not in `multi-user.target`.
-- **Unit.** `Type=oneshot`, `RemainAfterExit=yes`, ordered after `plymouth-quit.service` (Plymouth
-  holds DRM master until then) and `systemd-user-sessions.service`.
-  `ConditionPathExists=/dev/fb0`.
+- **Unit.** `Type=exec`, `RemainAfterExit=yes`: `ExecStartPre=tsv-idle-screen start` (below),
+  `ExecStart=tsv-idle-screen run` (execs `/usr/local/libexec/tsv-idle-rotate`),
+  `ExecStop=tsv-idle-screen stop $MAINPID`. `Restart=on-failure` (3 s, at most 5 starts in
+  120 s). A daemon that exits 0 (no KMS, no sensor, another DRM master) leaves the unit active
+  with the static frame. Ordered after `plymouth-quit.service` (Plymouth holds DRM master until
+  then) and `systemd-user-sessions.service`, and after the `plymouth-{reboot,poweroff,halt,kexec}`
+  units, so at shutdown it stops before the shutdown splash starts. `ConditionPathExists=/dev/fb0`.
 - **`tsv-idle-screen start`** (`/usr/local/sbin/tsv-idle-screen`):
   1. Unbinds fbcon from the framebuffer (`echo 0 > /sys/class/vtconsole/vtconN/bind` for the
      "frame buffer device" console). The VTs move to the dummy console, so the getty prompt,
@@ -515,13 +521,47 @@ fbdev emulation that is already in the kernel (`CONFIG_DRM_FBDEV_EMULATION=y`,
      because the PMI8950 WLED turns the panel off below about 1200
      (`devices/backlight/BRIEF.md`). An empty `IDLE_BRIGHTNESS=` leaves the backlight alone.
   Every failure is logged (`journalctl -u tsv-idle-screen`) and the script still exits 0.
-- **`tsv-idle-screen stop`** (`ExecStop`) restores the brightness and rebinds fbcon, so the
-  text console comes back:
+- **`tsv-idle-rotate`** (`scripts/idle-rotate/tsv-idle-rotate.c`; `IDLE_ROTATE=no` in
+  `/etc/tsv/idle-screen.conf` turns it off):
+  - **Angle.** The tablet's clockwise turn as seen by the viewer is `θ = atan2(a_x, −a_y)` from
+    the BMA253 (IIO, `in_accel_{x,y}_raw` × `in_accel_scale`, through `in_mount_matrix`); 0 is
+    native portrait. The wordmark is drawn turned by −θ on the panel. Only the in-plane
+    component counts, so the stand's lean-back (part of gravity on z) does not matter. Below
+    3 m/s² in-plane (lying flat) the last angle is held, until it is back above 3.5 m/s².
+  - **Smoothing.** The (x, y) gravity vector is low-pass filtered (one pole, τ = 0.12 s); the
+    shown angle follows the filtered angle through a critically damped spring (ω = 7 rad/s:
+    eased start and stop, no overshoot, about 1.2 s for 90°), always the short way round. A
+    move starts only once the target is more than 0.75° away, so sensor noise never redraws.
+  - **Drawing.** Two dumb buffers (XRGB8888), `drmModePageFlip` with a flip event, one frame per
+    vblank while turning and none otherwise. Bilinear sampling of the static frame's own
+    wordmark (`idle-rotate/logo-524x175.bgrx.zst`, made by `render-logo.sh`, embedded in the
+    binary), so at 0° the picture is byte-for-byte the static frame. Only the rotated bounding
+    box is cleared and redrawn. The 548 px diagonal fits the 800 px width at any angle.
+  - **DRM master** is taken only while turning and dropped when the wordmark settles; never
+    while `plymouthd` runs (`/run/plymouth/pid`). If someone else holds master when it needs
+    to turn, it logs "stepping aside" and exits 0. On exit it puts fbdev's framebuffer back on
+    the CRTC.
+  - **Sensor cost.** The BMA253 is on a bit-banged `i2c-gpio` bus, so each sysfs read costs
+    about 1 ms of CPU. It reads x and y only: 25 Hz while turning and for 3 s after; 2 Hz when
+    still. When still it also arms the chip's slope ("any-motion", IIO `roc`) interrupt on x and
+    y (threshold 2, output rate set to 31.25 Hz and restored on exit), so a turn wakes it at once.
+  - **CPU** (measured, CPUs at 1.23 GHz): still about 0.5 % of one core; turning about 24 % of
+    one core for the drawing (60 frames/s) plus about 5 % for 25 Hz sampling, only while it moves.
+  - **Tests.** `tsv-idle-rotate --probe` prints the sensor reading and the angle;
+    `--render DEG FILE` writes one 800x1280 frame (no device needed);
+    `TSV_ROTATE_FAKE=FILE` ("ax ay az") and `TSV_ROTATE_SPIN=DEG_PER_S` replace the sensor.
+  - **Build.** `scripts/idle-rotate/build.sh`: host `clang --target=aarch64-linux-gnu` and
+    `ld.lld`, linked by hand against glibc's start files and libdrm (no gcc in the sysroot).
+    `build-rootfs.sh` runs it with the image tree as the sysroot and checks the result under
+    qemu; standalone it extracts a sysroot from `out/thinksmart-alarm-system.img` with `debugfs`.
+- **`tsv-idle-screen stop`** (`ExecStop`) stops the daemon, restores the brightness and rebinds
+  fbcon, so the text console comes back:
 
   ```sh
   sudo systemctl stop tsv-idle-screen          # text console now, image again next boot
   sudo systemctl mask --now tsv-idle-screen    # never again (unmask to undo)
   sudo systemctl restart tsv-idle-screen       # redraw
+  journalctl -u tsv-idle-screen                # angle at start, each turn of 5 degrees or more
   ```
 
 - **Hand-over to a desktop.** `ConditionPathExists=!/etc/systemd/system/display-manager.service`:
@@ -529,7 +569,8 @@ fbdev emulation that is already in the kernel (`CONFIG_DRM_FBDEV_EMULATION=y`,
   idle screen no longer starts at all, and it is ordered `Before=display-manager.service`.
   `Conflicts=display-manager.service` is deliberately not used: a late, udev-triggered start
   would then stop the display manager. If a compositor is started some other way (for example
-  from a getty autologin), it simply takes DRM master and covers the framebuffer; mask the unit
+  from a getty autologin), it takes DRM master (the daemon holds it only while turning) and
+  covers the framebuffer; the daemon then steps aside the next time it would turn. Mask the unit
   as above to keep fbcon bound for that case too.
 - **Tests without hardware.** `TSV_IDLE_SYSFS`, `TSV_IDLE_DEV`, `TSV_IDLE_DIR`,
   `TSV_IDLE_STATE` and `TSV_IDLE_FB` point the script at a fake sysfs and `/dev`.
