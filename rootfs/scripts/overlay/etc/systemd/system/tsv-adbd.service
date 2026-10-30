@@ -7,6 +7,9 @@ Documentation=file:/opt/adbd/BUILDINFO
 DefaultDependencies=no
 After=tsv-usb-gadget.service local-fs.target systemd-journald.socket
 Wants=tsv-usb-gadget.service
+# adbd does not reopen its USB connection after the gadget is unbound, so a
+# restart of the gadget service restarts adbd too.
+PartOf=tsv-usb-gadget.service
 Conflicts=shutdown.target
 Before=shutdown.target
 

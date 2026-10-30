@@ -100,6 +100,7 @@ setup() {
 unbind() { bound && { echo "" > "$G/UDC" 2>/dev/null || true; }; return 0; }
 
 ADB_ON=0 ADB_BOUND_AT=0 ADB_FLAPS=0 ADB_HOLD_UNTIL=0 BIND_FAILED_AT=-100
+UDC_STATE="" LINK_LOST_AT=0
 
 # Bind to $UDC: with adb if adbd is ready and not held off, otherwise (or if
 # that bind fails) NCM + ACM only. Never leaves the gadget unbound if it can
@@ -109,7 +110,7 @@ bind_gadget() {
     if have_adb && adb_ready && (( SECONDS >= ADB_HOLD_UNTIL )); then
         adb_linked || ln -s "$G/functions/ffs.adb" "$C/ffs.adb" 2>/dev/null
         if adb_linked && echo "$UDC" > "$G/UDC" 2>/dev/null; then
-            ADB_ON=1 ADB_BOUND_AT=$SECONDS
+            ADB_ON=1 ADB_BOUND_AT=$SECONDS UDC_STATE="" LINK_LOST_AT=0
             log "bound to $UDC: NCM + ACM + adb"
             return 0
         fi
@@ -134,6 +135,20 @@ net_up() {
     [[ -n $ifn && -d /sys/class/net/$ifn ]] || ifn=usb0
     ip link set "$ifn" up 2>/dev/null
     ip addr replace "$ADDR" dev "$ifn" 2>/dev/null && log "$ifn up at $ADDR"
+}
+
+# True once, when the UDC is configured again after having left the
+# configured state (suspended, not attached).
+link_returned() {
+    local s=""
+    read -r s < "/sys/class/udc/$UDC/state" 2>/dev/null
+    if [[ $s == configured ]]; then
+        UDC_STATE=$s
+        (( LINK_LOST_AT )) && return 0
+    elif [[ $UDC_STATE == configured ]]; then
+        UDC_STATE=$s LINK_LOST_AT=$SECONDS
+    fi
+    return 1
 }
 
 adb_expected() { have_adb && systemctl -q is-enabled tsv-adbd.service 2>/dev/null; }
@@ -195,6 +210,14 @@ run() {
             fi
             UDC=$(first_udc) || continue
             bind_gadget && net_up
+        elif (( ADB_ON )) && link_returned; then
+            # adbd drops its USB connection when the link goes down (the host
+            # suspends the port, a cable glitch) and does not open it again when
+            # the host enumerates us again. Restart it; that unbinds the gadget
+            # and the branch above rebinds with adb.
+            log "host enumerated the gadget again after $((SECONDS - LINK_LOST_AT))s without a link; restarting adbd"
+            UDC_STATE="" LINK_LOST_AT=0
+            systemctl --no-block restart tsv-adbd.service
         elif (( ! ADB_ON )) && have_adb && adb_ready && (( SECONDS >= ADB_HOLD_UNTIL )); then
             # adbd came up after we bound without it: re-enumerate with adb.
             sleep 0.3
