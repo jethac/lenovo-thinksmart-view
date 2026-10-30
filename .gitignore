@@ -31,3 +31,14 @@ rootfs/*.log
 
 # Third-party profile notes, kept local
 JHB_REPORT.md
+.device.lock
+kernel/.deploy.*
+
+# Workstream scratch
+streams/*/downloads/
+streams/*/work/
+kernel/wt-*/
+kernel/build-*/
+
+# Camera stream scratch (vendor extracts, venv)
+streams/camera/work/

@@ -18,7 +18,7 @@
 // angle is held.
 //
 // Cost: when still, it sleeps on the accelerometer's motion interrupt and reads
-// x and y once a second as a safety net, and it holds no DRM master. While turning, it samples at 25 Hz and
+// x and y twice a second as a safety net, and it holds no DRM master. While turning, it samples at 25 Hz and
 // renders one frame per vblank; it holds DRM master only while animating, and
 // never while plymouthd runs.
 //
@@ -94,7 +94,7 @@ extern const unsigned char tsv_logo_end[];
 #define OMEGA 7.0           /* spring rate (rad/s): ~1.2 s for 90 degrees */
 #define FAST_NS 40000000LL  /* 25 Hz sampling while moving */
 #define SLOW_NS 200000000LL /* 5 Hz when still, without the motion interrupt */
-#define SLOW_EV_NS 1000000000LL /* 1 Hz safety poll when still, with it */
+#define SLOW_EV_NS 500000000LL /* 2 Hz safety poll when still, with it */
 #define STILL_NS 3000000000LL
 
 static const char *prog = "tsv-idle-rotate";
@@ -136,6 +136,28 @@ static inline uint32_t lerp_px(uint32_t a, uint32_t b, uint32_t f) // f 0..255
     return (rb & 0xff00ffu) | (gg & 0x00ff00u);
 }
 
+// Narrow [*xa, *xb) to the x where 0 <= q0 + (x - x0) * dq < qmax (16.16),
+// with a pixel of slack each side (the per-pixel test stays exact).
+static void clip_span(int32_t q0, int32_t dq, int32_t qmax, int x0, int *xa, int *xb)
+{
+    int lo, hi;
+    if (dq == 0) {
+        if (q0 >= 0 && q0 < qmax)
+            return;
+        lo = 1, hi = 0;
+    } else {
+        double t0 = -(double)q0 / dq, t1 = ((double)qmax - q0) / dq;
+        if (t0 > t1) {
+            double t = t0;
+            t0 = t1, t1 = t;
+        }
+        lo = x0 + (int)floor(t0) - 1, hi = x0 + (int)ceil(t1) + 1;
+    }
+    if (lo > *xa) *xa = lo;
+    if (hi < *xb) *xb = hi;
+    if (*xb < *xa) *xb = *xa;
+}
+
 // Draw the logo turned by -tilt (tilt in degrees, clockwise positive) into an
 // XRGB8888 frame of w x h with pitch in pixels. *drawn is the rectangle this
 // buffer last drew into; it is cleared to black first and then updated.
@@ -174,7 +196,17 @@ static void render(uint32_t *fb, int pitch, int w, int h, double tilt_deg, rect_
         int32_t u = (int32_t)lround((c * px - s * py + scx - 0.5) * 65536.0);
         int32_t v = (int32_t)lround((s * px + c * py + scy - 0.5) * 65536.0);
         uint32_t *row = fb + (size_t)y * pitch;
-        for (int x = r.x0; x < r.x1; x++, u += du, v += dv) {
+        int xa = r.x0, xb = r.x1;
+        clip_span(u, du, (LW - 1) << 16, r.x0, &xa, &xb);
+        clip_span(v, dv, (LH - 1) << 16, r.x0, &xa, &xb);
+        if (xa < r.x0) xa = r.x0;
+        if (xa > r.x1) xa = r.x1;
+        if (xb < xa) xb = xa;
+        if (xb > r.x1) xb = r.x1;
+        memset(row + r.x0, 0, (size_t)(xa - r.x0) * 4);
+        memset(row + xb, 0, (size_t)(r.x1 - xb) * 4);
+        u += (xa - r.x0) * du, v += (xa - r.x0) * dv;
+        for (int x = xa; x < xb; x++, u += du, v += dv) {
             int32_t iu = u >> 16, iv = v >> 16;
             uint32_t o = 0;
             if ((uint32_t)iu < LW - 1 && (uint32_t)iv < LH - 1) {

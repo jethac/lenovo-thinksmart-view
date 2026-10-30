@@ -154,6 +154,7 @@ in_root "/usr/local/libexec/tsv-idle-rotate --render 30 /tmp/idle-rotate.raw && 
 echo "build-rootfs: initramfs $(stat -c %s "$R/boot/initramfs-tsv.img") bytes, splash theme aiand"
 mv "$R/boot/initramfs-tsv.img" "$BOOT/"
 install -m 0644 "$KBUILD/arch/arm64/boot/Image.gz" "$BOOT/Image.gz"
+printf '%s\n' "$KVER" > "$BOOT/kernel.release"
 install -D -m 0644 "$KBUILD/arch/arm64/boot/dts/qcom/$DTB" "$BOOT/dtbs/qcom/$DTB"
 install -D -m 0644 "$KBUILD/.config" "$BOOT/config-$KVER"
 mkdir -p "$BOOT/extlinux"

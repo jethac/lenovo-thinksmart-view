@@ -7,8 +7,10 @@ SRC=${SRC:-linux-7.3}
 OUT=${OUT:-build-7.3}
 K="make -C $SRC O=../$OUT ARCH=arm64 LLVM=1 -j$(nproc)"
 mkdir -p $OUT
-# Apply our patches (kernel/patches/*.patch) to the tree, once each.
-for p in patches/*.patch; do
+# Apply our patches to the tree, once each: the accepted series in
+# kernel/patches/, then a workstream's work in progress from $EXTRA_PATCHES
+# (a directory, e.g. patches-wip/wifi), in name order.
+for p in patches/*.patch ${EXTRA_PATCHES:+$EXTRA_PATCHES/*.patch}; do
   [ -e "$p" ] || continue
   if git -C $SRC apply --check "../$p" 2>/dev/null; then git -C $SRC apply "../$p" && echo "applied $p"
   elif git -C $SRC apply --check -R "../$p" 2>/dev/null; then echo "already applied $p"

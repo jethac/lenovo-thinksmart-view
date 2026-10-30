@@ -1,4 +1,5 @@
 # Kernel is not packaged; it lives on the ext2 boot partition (/boot).
-ALL_kver="7.3.0-g755ffc44d5d8"
+# /boot/kernel.release is written by the image build and kernel/deploy-to-device.sh.
+ALL_kver="$(</boot/kernel.release)"
 PRESETS=('default')
 default_image="/boot/initramfs-tsv.img"
