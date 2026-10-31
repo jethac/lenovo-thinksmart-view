@@ -34,7 +34,7 @@ Each item is checked on the device, not inferred from logs. `[x]` means verified
 | Touch | FocalTech FT8201 (TDDI, `fts_ts` at i2c 3-0038 on stock). Other units ship Himax HX83100A | All points, wakes the screen | driver binds (`edt-ft5x06`); input not yet tested |
 | GPU | Adreno 506 (freedreno) | Hardware GL/GLES for the full-screen app (DRM/KMS). **No Vulkan**: Mesa's Turnip starts at a6xx and lists no plans for a5xx; freedreno covers a5xx for GL. | kernel side up (zap shader, microcode); Mesa being installed and benchmarked (`streams/gpu-compute/`) |
 | Video decode | Venus | H.264 and HEVC decode through V4L2 | not enabled yet |
-| Wi-Fi | QCA9379 SDIO (`ath10k_sdio`) | As in Access above | probes, scans the mesh; join waits on the PSK |
+| Wi-Fi | QCA9379 SDIO (`ath10k_sdio`) | As in Access above | joined `yareyare-xd-mesh` from the on-device settings (2026-10-31); reconnect at boot and the 24 h rekey soak not yet checked |
 | Bluetooth | QCA UART | Pairs, A2DP audio out | not tested on mainline |
 | Speaker | TI TAS5782M (10 W) | Clean playback at full volume through PipeWire | **done**: driver `0301`-`0303`, Lenovo tuning verified by register read-back, 0.13 % THD at -6 dBFS, no pops |
 | Microphones | Dual DMIC array | Both channels capture; usable for wake word and ASR | capture works (used to measure the speaker); UCM profile not written |
@@ -89,7 +89,7 @@ Each item is checked on the device, not inferred from logs. `[x]` means verified
 3. **Done** (with our own lk2nd and image). Known-good boot: lk2nd plus an existing image, to prove the boot chain on this unit.
 4. **Done.** Our kernel: `barni2000/7.3/develop` built here, booting through lk2nd.
 5. **Done.** Arch Linux ARM root filesystem, with USB networking on first boot.
-6. **In progress.** Wi-Fi, with the rekey problem checked on 7.3 and the patch carried forward if it is still needed. (Still needed; `0101` accepted; join waits on the PSK.)
+6. **In progress.** Wi-Fi, with the rekey problem checked on 7.3 and the patch carried forward if it is still needed. (Still needed; `0101` accepted. Joined from the on-device Wi-Fi settings 2026-10-31; join at boot and rekey over a long run still to verify.)
 7. **Repartition done 2026-10-31** (root 6.6 GiB, 5.3 GiB free; `streams/stage-b/`); voice pipeline in progress. Stage B repartition (root grows to about 6.7 GiB, for the models), then the voice pipeline: recognition, synthesis, the ai& client, and the full-screen app.
 8. **In progress** (see the table). Hardware, roughly easiest first: buttons, sensors, backlight, touch, GPU, video decode, Bluetooth, speaker, microphones, echo cancellation, camera.
 9. 24 h soak and the recovery drill.
