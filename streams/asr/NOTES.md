@@ -293,6 +293,7 @@ Not useful for this model: the Adreno 506 reaches about 14 GFLOP/s FP32 in OpenG
 
 ## Next
 
+0. Prefill on the GPU, once the fragment-shader kernels from `streams/kokoro-gpu/` reach about 30 GFLOP/s. Prefill is compute-bound GEMM (about 50 GFLOP per phrase, 1.6-2.4 s at the CPU's ~27 GFLOP/s); GPU and CPU in parallel could roughly halve it. Decode is bandwidth-bound and gains nothing from the GPU, which shares the LPDDR3 channel. There is no memory for a second copy of the weights, so the GPU must hold the original Q4_K/Q8_0 blocks in integer textures (~350 MB) and replace the CPU's mapped copy, with decode moving to the GPU too. ASR and TTS never use the GPU at the same time.
 1. Speculative decoding (`--spec-k-drafts`) for the decoder steps (Qwen3-ASR does not report `supports_spec_decode` at the pinned commit).
 2. Shorter prompt: 18 of the 80 prefill tokens are prompt. (The 9 frame tokens and the context are now cached, `patches/0003`; what is left per phrase is the audio rows and the 6 tokens after them.)
 3. The output head is 122 MiB of Q6_K read on every decoder step; a lower-bit head would cut step time.
