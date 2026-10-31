@@ -3,11 +3,11 @@
 # straylight/SHA256SUMS (build-straylight.sh --repin prints the new sums).
 
 # The app (screen, listener, ai& client, Wi-Fi picker) and its hardware crate,
-# a path dependency at ../thinksmart-view-hal. The Slint fork (deps/slint) and
-# transcribe.cpp are pinned by straylight-voice itself (scripts/prepare-slint.sh,
-# listen/asr/build.sh).
+# a path dependency at ../thinksmart-view-hal. The Slint fork and transcribe.cpp
+# are pinned by straylight-voice itself (Slint as a git dependency at a revision
+# in its Cargo.toml and Cargo.lock; transcribe.cpp by listen/asr/build.sh).
 STRAYLIGHT_REPO=git@github.com:jethac/straylight-voice.git
-STRAYLIGHT_COMMIT=3e3b9d0ea2e08fe512ec86ca2b38993a87aae677
+STRAYLIGHT_COMMIT=b8f4a2636e61f1f45cdbc1206879623697aa339f
 VIEW_HAL_REPO=git@github.com:jethac/thinksmart-view-hal.git
 VIEW_HAL_COMMIT=560905784220d76aeceab31da7a01bdb14f713ab
 SLINT_REPO=git@github.com:jethac/slint.git

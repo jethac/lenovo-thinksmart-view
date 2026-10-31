@@ -19,6 +19,37 @@ measurements and the exact image changes ("What the image build must add").
   linuxkms software path (kept in the app repo, `patches/slint/`); without
   them every frame was a full repaint and Idle alone took a whole core.
 
+## 2026-11-01: partial-redraw fix, character-by-character text
+
+- **Redraw bug** (a volume charm moved in from off the panel left a copy of
+  itself behind): an earlier shadow-buffer patch copied only the current
+  frame's rectangles into the dumb buffer two frames old. The fork's branch
+  `linuxkms-partial-rendering` already had the union with the previous
+  frame; reproduced on the tablet by removing it (`work/noprev/`), no stale
+  pixels with the branch (`work/before*/`, `work/after/`). Fork commit
+  `0c4f3fa268` adds a backend unit test for the copy. straylight-voice
+  `1a4250d`: Slint as a git dependency (no more `prepare-slint.sh`), the
+  charm slides in from wholly off the left edge again.
+- **Text a character at a time** (straylight-voice `b8f4a26`; fork branch
+  `styled-text-weight-line-height`, `4f43056f4f`: `StyledText`
+  `default-font-weight` and `line-height`). Replies and landed captions
+  appear per grapheme with a 90 ms fade; the reply is one `StyledText` with
+  per-range colours, spoken progress per character, interpolated between
+  `spoken_chars` updates. Frames mid-reveal: `work/stream/`.
+- **CPU**: Idle 4.7 to 4.8 % (deployed `b8f4a26`, 59 frames/s). A long
+  streamed reply in Speaking: 30.5 to 32.8 % of a core against 25.4 to
+  26.9 % with the two-layer reply; accepted for now. Next step (app README,
+  "Not done yet"): colours applied when drawing, without relayout, and only
+  the changed characters marked dirty.
+- **Deployed** 2026-11-01: `/usr/local/bin/straylight-voice` and
+  `straylight-voicectl` built from a clean checkout of `b8f4a26` (reports
+  `0.1.0 (b8f4a26)`); the previous pair is kept in
+  `work/deploy-b8f4a26/prev/`. Idle frame: `work/deploy-b8f4a26/idle-b8f4a26.png`.
+- **Image pin**: `rootfs/scripts/straylight/pins.sh` at `b8f4a26`, sums
+  re-pinned with `build-straylight.sh --repin` (only the screen's two
+  binaries change; the listener, ai& client and Wi-Fi service are the same
+  source as before).
+
 ## Left on the device
 
 Installed with `pacman -U` (packages from the Arch Linux ARM mirror, verified

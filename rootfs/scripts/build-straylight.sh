@@ -13,9 +13,11 @@
 # STAGE is recreated: usr/local/bin, usr/local/share/straylight-listen,
 # etc/systemd/system, etc/*.conf, the udev, polkit, D-Bus and sysusers files.
 #
-# Optional: SEED_STRAYLIGHT, SEED_VIEW_HAL, SEED_SLINT, SEED_TRANSCRIBE name
-# existing local clones to clone from instead of GitHub (objects only; the
-# pinned commits are still checked out and verified).
+# Optional: SEED_STRAYLIGHT, SEED_VIEW_HAL, SEED_TRANSCRIBE name existing local
+# clones to clone from instead of GitHub (objects only; the pinned commits are
+# still checked out and verified). The Slint fork is a git dependency of
+# straylight-voice, at the revision its Cargo.lock records: cargo fetches it
+# over ssh into CARGO_HOME.
 set -euo pipefail
 REPIN=
 [[ ${1:-} == --repin ]] && { REPIN=1; shift; }
@@ -58,12 +60,6 @@ checkout() {
 log "straylight-voice $STRAYLIGHT_COMMIT, view-hal $VIEW_HAL_COMMIT"
 checkout "$SV" "$STRAYLIGHT_REPO" "${SEED_STRAYLIGHT:-}" "$STRAYLIGHT_COMMIT"
 checkout "$SRC/thinksmart-view-hal" "$VIEW_HAL_REPO" "${SEED_VIEW_HAL:-}" "$VIEW_HAL_COMMIT"
-# Slint: prepare-slint.sh clones from GitHub when deps/slint is missing; seed it.
-if [[ ! -d $SV/deps/slint/.git && -n ${SEED_SLINT:-} ]]; then
-    mkdir -p "$SV/deps"
-    git clone -q --no-checkout "$SEED_SLINT" "$SV/deps/slint"
-    git -C "$SV/deps/slint" remote set-url origin "$SLINT_REPO"
-fi
 if [[ ! -d $SRC/transcribe.cpp/.git ]]; then
     git clone -q --no-checkout "${SEED_TRANSCRIBE:-$TRANSCRIBE_REPO}" "$SRC/transcribe.cpp"
     git -C "$SRC/transcribe.cpp" remote set-url origin "$TRANSCRIBE_REPO"
@@ -92,7 +88,6 @@ export TRANSCRIBE_GIT=$SRC/transcribe.cpp
     scripts/fetch-packages.sh libinput systemd-libs libxkbcommon alsa-lib noto-fonts noto-fonts-cjk >/dev/null
     BASE=$ASR_SYSROOT scripts/make-sysroot.sh >/dev/null
     FONTTOOLS_PY=$VENV/bin/python scripts/make-fonts.sh >/dev/null
-    scripts/prepare-slint.sh
     listen/asr/build.sh aarch64 >/dev/null
     log "cargo: straylight-voice, -voicectl"
     scripts/build-aarch64.sh --release --locked
@@ -196,7 +191,7 @@ fi
 {
     echo "straylight-voice $STRAYLIGHT_COMMIT ($STRAYLIGHT_REPO)"
     echo "thinksmart-view-hal $VIEW_HAL_COMMIT ($VIEW_HAL_REPO)"
-    echo "slint $(git -C "$SV/deps/slint" rev-parse HEAD) + straylight-voice patches/slint/"
+    echo "slint $(sed -n 's|^source = "git+ssh://git@github.com/jethac/slint.git?rev=\([0-9a-f]*\)#.*|\1|p' "$SV/Cargo.lock" | sort -u) ($SLINT_REPO, straylight-voice's Cargo.lock)"
     echo "transcribe.cpp $(cut -d' ' -f1 "$SV/out/listen/asr-aarch64/STAMP") + listen/asr/patches/"
     echo "rustc $(rustc --version | cut -d' ' -f2), clang $(clang --version | sed -n 's/.*version \([0-9.]*\).*/\1/p;q')"
     echo "extra files: $n_extra"

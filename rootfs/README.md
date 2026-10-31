@@ -650,35 +650,37 @@ The image carries the whole Straylight stack from the `straylight-voice` reposit
 `scripts/build-straylight.sh` (step 2b of `build-image.sh`) builds it from source rather than
 taking binaries from somebody's working tree:
 
-- **Pins** (`scripts/straylight/pins.sh`): straylight-voice `3e3b9d0e` and its path dependency
-  `thinksmart-view-hal` `56090578`. straylight-voice pins the rest itself: the Slint fork at
-  `56ba0eb3` plus its `patches/slint/`, transcribe.cpp at `5700f127` plus `listen/asr/patches/`,
-  and `Cargo.lock` (cargo runs with `--locked`).
+- **Pins** (`scripts/straylight/pins.sh`): straylight-voice `b8f4a263` and its path dependency
+  `thinksmart-view-hal` `56090578`. straylight-voice pins the rest itself: the Slint fork as a
+  git dependency at `4f43056f` (branch `styled-text-weight-line-height`: the linuxkms partial
+  rendering changes and `StyledText`'s weight and line height), transcribe.cpp at `5700f127`
+  plus `listen/asr/patches/`, and `Cargo.lock` (cargo runs with `--locked`).
 - **How.** Clean clones in `downloads/straylight/src/` checked out detached at the pins (the
   script fails if a tracked file differs, before or after the build), then straylight-voice's own
   scripts in its own order: `fetch-packages.sh` (Arch Linux ARM packages, SHA-256 and signature
   checked with the key `fetch-alarm.sh` verified), `make-sysroot.sh` on top of the ASR stream's
   glibc sysroot (`streams/asr/scripts/make-sysroot.sh`, from the verified Debian `.deb`s),
-  `make-fonts.sh`, `prepare-slint.sh`, `listen/asr/build.sh aarch64`, and
+  `make-fonts.sh`, `listen/asr/build.sh aarch64`, and
   `build-aarch64.sh --release --locked` for the screen, the listener (`--features asr`), the
   ai& client and the Wi-Fi service. Python tools come from a venv with pinned versions
   (`fonttools`, `onnx`, `gguf`, `numpy`). The wordmark is `assets/aiand-wordmark-white.svg`.
-- **Why build, not copy.** The binaries on the tablet were installed from a developer tree: the
-  screen reports `3e3b9d0-dirty` (uncommitted listener work beside it), and the listener and
-  ai& client were built at `34dcb31` (same source as the pin for them). Copying them would put
+- **Why build, not copy.** The binaries on the tablet were installed from developer trees: the
+  screen was built from a clean checkout of `b8f4a26` (it reports `0.1.0 (b8f4a26)`); the
+  listener is deployed by its own stream, from its own working tree. Copying them would put
   an unrecorded build in the image; building at a pin records exactly what is in it.
   `straylight-wifi` came out bit-identical to the tablet's copy from a different checkout path,
-  and the derived models match the streams' sums exactly. `straylight-voicectl` has the same
-  size and strings as the tablet's but differs in code bytes (the tablet's was an incremental
-  build in that dirty tree), so a from-scratch rebuild on another machine may need a re-pin.
+  and the derived models match the streams' sums exactly. At `b8f4a26` the tablet's
+  `straylight-voicectl` is bit-identical to the image's; its `straylight-voice` is not (96 bytes
+  apart: same commit, built in another checkout with a different environment), so a
+  from-scratch rebuild on another machine may need a re-pin.
 - **Checked.** Every staged file (binaries, models, units, configs) is compared with
   `scripts/straylight/SHA256SUMS`; any difference stops the build. Changing a pin means
   `build-straylight.sh --repin DL STAGE`, reviewing `DL/SHA256SUMS.new`, and copying it over.
   `/usr/local/share/straylight/BUILDINFO` records the commits, toolchain and sums.
 - **Cache.** `downloads/straylight/` keeps the clones, venv, sysroots and cargo trees (about
-  3.3 GB), so a second image build only re-stages. `SEED_STRAYLIGHT`, `SEED_VIEW_HAL`,
-  `SEED_SLINT` and `SEED_TRANSCRIBE` let the first clone copy objects from a local checkout
-  instead of GitHub.
+  3.3 GB), so a second image build only re-stages. `SEED_STRAYLIGHT`, `SEED_VIEW_HAL` and
+  `SEED_TRANSCRIBE` let the first clone copy objects from a local checkout instead of GitHub;
+  cargo fetches the Slint fork over ssh into `CARGO_HOME`.
 
 ### Models
 
