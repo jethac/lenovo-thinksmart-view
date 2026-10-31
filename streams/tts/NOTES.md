@@ -165,3 +165,160 @@ The full pipeline is 8.5x slower than real time; no rewrite of this model gets i
 ## Left on the device
 
 Nothing: `/dev/shm/tts*` and `/var/tmp/ttsmem` were removed, the user manager started for playback was stopped, and the sink volume is back at 0.30. The OOM described above restarted several system services; all are active again (`tsv-idle-screen` restarted by hand).
+
+# Kokoro-82M (hexgrad, v1.0)
+
+Kokoro-82M v1.0 replaces Magpie as the on-device voice: it is the reply voice of `straylight-listen` (straylight-voice `listen/src/tts/`), installed and running on the tablet. Kokoro is much smaller than Magpie, but **it is still about 3x slower than real time on this CPU** (RTF 2.9-3.0 on 6 threads, in all three languages). The reason is again the vocoder: Kokoro's iSTFTNet generator needs about 48 GFLOP per second of audio, and the A53 cluster's best rate is about 25 GFLOP/s. So replies are spoken piece by piece (clauses and sentences) with pauses between pieces, not as continuous speech. See [Can Kokoro keep up?](#can-kokoro-keep-up).
+
+Measured 2026-10-31 on the baseline kernel, schedutil up to 1.8 GHz.
+
+## Runtime: ONNX Runtime, from Rust, in the listener's process
+
+- **Model**: onnx-community's export of v1.0 (`onnx-community/Kokoro-82M-v1.0-ONNX` at `1939ad2a`), the `model_uint8.onnx` variant (QLinearConv/QLinearMatMul, 177 MB). `scripts/kokoro-onnx-durations.py` adds the duration predictor's rounded per-token durations (the tensor feeding the alignment's CumSum) as a second output, so the player can map playback time to text. Nothing else changes.
+- **Runtime**: ONNX Runtime 1.28.2 (`libonnxruntime.so` from sherpa-onnx v2.0.1's linux-aarch64 build, MIT), opened at run time by the `ort` crate (2.0.0-rc.15, load-dynamic, API 24), so the binary has no link-time dependency on it. Intra-op threads 6, spinning off (the pool sleeps between runs and leaves the cores to capture), nice 5 like the recogniser (ORT's threads are made by the synthesis thread and inherit it), graph optimisation level 3.
+- **Why not sherpa-onnx's Kokoro support**: its English front end is espeak-ng, linked into the library (GPL-3.0, in-process), and it has no Japanese front end for Kokoro. **Why not a ggml port**: none was mature enough for all three languages; the cost is the vocoder's arithmetic either way (below), so a different runtime would not change the conclusion.
+
+### Variants (device, `straylight-listen --tts-bench`, en-cal: 105 tokens, 6.55 s of audio)
+
+| Model | Threads | RTF | Peak RSS | CPU s |
+| --- | --- | --- | --- | --- |
+| fp32 (`model.onnx`, 326 MB) | 4 | 4.43 | 521 MiB | 102 |
+| fp32 | 6 | 3.30 | 539 MiB | 107 |
+| fp32, spinning on | 6 | 3.18 | 526 MiB | 120 |
+| int8 dynamic (`model_quantized.onnx`, ConvInteger/MatMulInteger) | 4 | 6.27 | 304 MiB | 87 |
+| **uint8 static (`model_uint8.onnx`)** | 4 | 3.78 | 404 MiB | 87 |
+| **uint8 static** | **6** | **2.94** | **407 MiB** | 93 |
+
+- Dynamic int8 is the slowest: without dotprod, ORT's ConvInteger on ARMv8.0 is worse than its fp32 im2col+SGEMM. The static uint8 model is 12 % faster than fp32 and 130 MiB smaller. Quality: an ASR round trip (Qwen3-ASR Q8_0, `scripts/kokoro-asr-check.py`, 65 lines: 25 en, 20 ja, 20 zh, af_heart / jf_alpha / zf_xiaoni) gives CER 6.65 / 7.12 / 7.83 % for fp32 and 7.42 / 8.44 / 7.85 % for uint8: within the noise of 20-25 lines (most English errors are digits written for spoken numbers). uint8 is installed.
+- Spinning buys 4 % at the cost of 13 % more CPU; left off.
+- 6 threads is the budget while speaking (the recogniser is idle). 4 threads is 28 % slower.
+- The thread-split lesson from Magpie does not arise: Kokoro is one graph in one session, one pool.
+
+## Can Kokoro keep up?
+
+`scripts/kokoro-profile.py` (ORT profile, laptop, 1 thread, en-cal): 85 % of the time is the decoder's generator (its residual blocks and the two noise residual blocks), 72 % of it in Conv. Its stages run 256 channels at 800 Hz and 128 channels at 4800 Hz (to the 5-sample-hop iSTFT at 24 kHz), with kernels 3/7/11 and three dilations, two convolutions each: about 24 GMAC (48 GFLOP) per second of audio. At 6 threads the device achieves about 14.5 GFLOP/s (RTF 3.3 fp32), which is three quarters of what 6 of the 8 cores can do. Even all 8 cores at peak would leave it about 2x slower than real time. Nothing short of a cheaper vocoder (or synthesis off the device) makes the stream continuous.
+
+## Text front end (Rust, no Python, no GPL)
+
+All in straylight-voice `listen/src/tts/g2p/`; data made by `scripts/kokoro-frontend-data.py` (and copied there as `listen/scripts/`).
+
+- **English** (`en.rs`): a port of misaki's `en.G2P` with its gold and silver US lexicons (365k entries). The special cases, stress rules, -s/-ed/-ing stems, numbers (num2words in `num_en.rs`) and the "the/to" vowel context are ported line by line. Differences:
+  - no spaCy: a small tokenizer, and a rule tagger for what the lexicon needs (determiners, prepositions, PRP "I", NNP for all-capitals and mid-sentence capitals, and noun/verb/participle from the word before);
+  - unknown words go to **g2p_en's GRU network** (Apache-2.0, trained on CMUdict; 3.3 MB) mapped from ARPAbet to misaki's phonemes, instead of espeak-ng;
+  - clock times are read as spoken ("9:30" nine thirty, "10:05" ten oh five);
+  - `en-extra.lex` adds "Straylight".
+- **Japanese** (`ja.rs`): misaki's `JAG2P` as Kokoro v1.0 uses it (the cutlet path), with **MeCab and the NAIST Japanese Dictionary from Open JTalk 1.11** (BSD; r9y9/open_jtalk `1e52154e`, the same dictionary bytes as the Magpie build, 65 MB, memory-mapped) instead of fugashi + UniDic 3.1 (770 MB). Differences:
+  - punctuation kept: with UniDic, misaki's cutlet drops every 、 and 。 (their pronunciation field is `*`, read as a kana it does not know);
+  - numbers with common counters read properly (3日 みっか, 4時 よじ, 15分 じゅうごふん, 2時間, 4人, 1回); misaki reads the number and leaves the counter to the dictionary (3日 as さんび);
+  - the volitional う after an o-row syllable as a long vowel (ましょう, でしょう), which UniDic's pronunciations have;
+  - Latin words through the English front end (misaki passes them through as letters).
+- **Mandarin** (`zh.rs`, `num_zh.rs`): misaki's v1.0 `ZHG2P` path: cn2an-style numerals, its punctuation map, jieba (jieba-rs, MIT, the same dictionary and HMM) words, pypinyin's `lazy_pinyin` (whole phrase, else its strict forward maximum match over the phrase table, else per character; tables exported from pypinyin, MIT), misaki's pinyin-to-IPA table with tone arrows. No tone sandhi, as v1.0. Latin words through the English front end (v1.0 passed them through as raw letters, which Kokoro then reads as phoneme symbols).
+
+### Parity with Python misaki (`scripts/kokoro-g2p-compare.py`, `cases/kokoro-g2p.tsv`: 25 en, 20 ja, 20 zh assistant lines)
+
+| | identical lines | phoneme error rate vs misaki |
+| --- | --- | --- |
+| English | 19/25 | 1.5 % |
+| Japanese | 0/20 | 7.2 % |
+| Mandarin | 19/20 | 0.9 % |
+
+- English mismatches: unknown names (g2p_en vs espeak-ng: Priyanka, Joaquín, Siobhan), "read" past tense after "I" (spaCy tags it VBD), "sign in" (spaCy's particle "in" stressed), and misaki itself garbling "8:15" and "10:05" (the clock-time reading fixes those).
+- Japanese: every line differs because misaki drops all punctuation (above). The rest are dictionary differences: UniDic splits words differently (spacing), and either dictionary reads some words differently (NAIST: 明日 あした, 木曜日 もくようび, 15分 ふん, all correct; UniDic: いい as イー, 何か なんか). Neither is consistently better; the counters above fix most date/time readings.
+- Mandarin: the one difference is the English word (above).
+
+Front end time on the device (`straylight-listen --g2p`, the 65 lines): mean 2.9 ms (en), 1.8 ms (ja), 0.09 ms (zh) per sentence; the first English sentence 41 ms (g2p_en's network), the first Japanese one 16 ms (dictionary pages). Memory: English 15 MiB (the lexicon kept as its text with a sorted index; a hash map of strings was 57 MiB), Japanese 16 MiB and Mandarin 55 MiB (jieba), both loaded on first use and dropped after 10 minutes unused.
+
+## Voices (task 2)
+
+`work/kokoro-samples/` (git-ignored): every American female, Japanese female and Mandarin female voice, and blends, for a greeting, a calendar answer and a two-sentence reply; `work/kokoro-samples/INDEX.md` has the texts, hexgrad's grades, pitch, rate, ASR round trip, timbre similarity and notes (`scripts/kokoro-voices.py`, rendered by `scripts/kokoro-reference.py` with PyTorch on the laptop). From measurements and grades, not listening:
+
+- **English: `af_heart`** (grade A, F0 197 Hz). Alternative `af_bella` (A-, closest timbre to af_heart).
+- **Japanese: `jf_alpha*0.7+af_heart*0.3`** (style vectors interpolated); plain `jf_alpha` is the only adult, non-storybook jf voice. The blend lowers its F0 (271 to 246 Hz) and moves its timbre toward af_heart (cosine 0.41 to 0.62) with no loss in the ASR round trip.
+- **Mandarin: `zf_xiaoni*0.7+af_heart*0.3`**; zf_xiaoni is the zf voice closest in timbre to af_heart (0.47), and the blend also removed its two tone slips (ASR CER 3.2 % to 0).
+- Closest in timbre to af_heart: zf_xiaoni for Mandarin, jf_alpha for Japanese (jf_tebukuro scores slightly higher but is childlike).
+
+These are the installed defaults, changeable in `/etc/straylight-listen.conf` (`--tts-voice ja=jf_alpha`, ...).
+
+## On the device: straylight-listen
+
+Installed by straylight-voice `listen/packaging/install.sh` (commit `1c9ca58`), enabled and running. Design and flow: straylight-voice `listen/README.md`, "Speech output". In short:
+
+- The streamed reply is cut into clauses and sentences (`split.rs`; the first piece short: a clause, at most 44 characters in English, or a Japanese break after a particle or ので/から), each synthesised in order on the "tts" thread while earlier pieces play on "tts-play": 24 to 48 kHz (polyphase Kaiser FIR, -80 dB), mono to stereo, S16_LE to `hw:0,0`, 20 ms periods, 80 ms buffer, the PCM opened per reply and closed after it (silence between pieces).
+- `spoken_chars`: grapheme clusters, about 30 Hz, from the sample being played (device delay subtracted), interpolated through the per-token durations (English: per word over that word's phonemes; Japanese and Mandarin: over the speaking time without pauses), never backwards. `level` from the output at the playback position.
+- stop/cancel: the PCM is dropped, the running ONNX Runtime run terminated, queued pieces dropped. Measured with `--say-stop-ms`: 2-17 ms from the stop to the stream closed.
+- The tablet's own voice cannot wake it (the detector fires only from Idle) and the wake word stays off 1.5 s after speech. Barge-in needs echo cancellation first (future work; the playback signal is in the same process for it).
+- Offline speaks "I can't reach ai& right now." (ja/zh too); it and the not-signed-in prompt and the ai& error lines are synthesised once while idle and kept in `/var/lib/straylight-listen/tts-cache/`.
+- Volume: the amplifier's shared setting (never above 207); speech is written at full digital scale, never boosted.
+- Voices and pronunciations are configurable (`/etc/straylight-listen.conf`: `--tts-voice L=V`; `/etc/straylight-listen.d/lexicon.tsv`). The company name's pronunciation is an override in straylight-voice `listen/tts/lexicon.tsv` (samples for choosing it: `work/kokoro-samples/brand/`, git-ignored). Kokoro reads the symbol ʔ as a t.
+
+### Device performance (task 3)
+
+`--say-file` with the pacing sink (no sound; `scripts/device-kokoro.sh run ... --say-file bench-say.tsv --tts-device pace`), uint8, 6 threads, the service running alongside. Lines `*-cal` and `*-two` are 1-2 sentences, `*-3` three. "Gaps" is the silence a listener hears between pieces.
+
+| Line | Audio | First audio | RTF | Gaps | Peak RSS (TTS process) |
+| --- | --- | --- | --- | --- | --- |
+| en-cal (1 sentence) | 6.9 s | 11.7 s | 2.96 | 5.0 s | 501 MiB |
+| en-two | 6.8 s | 11.9 s | 2.94 | 4.1 s | 501 MiB |
+| en-3 | 11.2 s | 4.8 s | 3.02 | 20.6 s | 535 MiB |
+| ja-cal (1 sentence) | 8.5 s | 5.9 s | 2.96 | 14.1 s | 557 MiB |
+| ja-two | 8.9 s | 6.1 s | 2.95 | 14.6 s | 561 MiB |
+| ja-3 | 13.3 s | 6.2 s | 2.97 | 22.8 s | 564 MiB |
+| zh-cal (1 sentence) | 9.1 s | 14.7 s | 2.92 | 7.0 s | 577 MiB |
+| zh-two | 8.5 s | 13.9 s | 2.91 | 6.2 s | 579 MiB |
+| zh-3 | 12.7 s | 6.2 s | 2.94 | 21.1 s | 579 MiB |
+
+(That run was before the memory changes below and before the first piece was cut shorter; the RSS column is the old figure.) First audio is about 3x the first piece's length plus 0.3 s. **Speech is not continuous**: each next piece takes 3x its length, so the reply comes clause by clause with about twice as much silence as speech. The total time is about 3x the audio regardless of how it is cut; short pieces only move the pauses to clause boundaries.
+
+Through the whole pipeline with live ai& replies (`scripts/device-kokoro-e2e.sh`: the demo requests from files, wake word, Qwen3-ASR with patch 0003, ai&, Kokoro, pacing sink, as a transient unit with the service's limits): first audio 6.9 s (en), 14.2 s (ja, one long sentence with no break; the particle rule now cuts it), 8.3 s (zh) after the reply's first text; RTF 2.95-3.04. Through the air (`scripts/device-kokoro-acoustic.sh`, amp held at 187 = -10 dB, then put back to the user's 207): the installed service answered aloud in English and Japanese.
+
+Threads and CPU: 6 ORT threads at nice 5, spinning off. While a piece is synthesised the process uses about 4.8 cores (93 CPU-s over 19.5 s of synthesis); nothing when idle. Wake detector and capture while synthesising (utterance logs, live and file mode): longest audio-thread block 14-18.7 ms, none over 20 ms, no capture overrun, backlog at most 1 block.
+
+### Memory over a full cycle
+
+Changes after the first measurements (the service had reached 1.4-1.5 GiB RSS and the recogniser's pages had been reclaimed once, which made one request's decoder take 10.2 s instead of 2.3 s):
+- English lexicon as text plus a sorted index: 57 to 15 MiB; Japanese and Mandarin data loaded lazily and dropped when unused: -71 MiB at rest.
+- ONNX Runtime's arena shrunk after every run (`memory.enable_memory_arena_shrinkage`): without it the arena only grows with each new input length (395 to 479 MiB in two runs); with it the process returns to about 340 MiB after each run, no speed cost. Without an arena at all the transient peak is higher (810 MiB; a capped test scope was memcg-killed at 800 MiB, nothing else) and prepacking off is 25 % slower.
+- The model file's page cache dropped after loading (posix_fadvise), so it is not charged to the unit.
+- `MemoryLow=1500M` (was 1000M), so the whole working set, including the recogniser's memory-mapped pages, is protected; `MemoryMax=1600M` (was 1300M).
+
+Full cycle, wake, captions, reply spoken, idle, for en, ja and zh in turn (`scripts/device-kokoro-e2e.sh cycle`, RSS sampled every 0.5 s): RSS 935 MiB before the synthesiser loads, 1253-1310 MiB through the cycle (max 1362), of which RssFile (the recogniser's model) 530-568 MiB throughout; major faults 13 at start and still 13 at the end (no page re-read; each request's decoder 2.0-2.3 s, as before); MemAvailable 1223 MiB before, at least 815 MiB during. No OOM kill of anything (kernel log), cgroup `memory.events` all zero.
+
+## For the image (`rootfs/scripts/`, not changed here)
+
+1. Build: `listen/tts/build.sh aarch64` (clones `git@github.com:r9y9/open_jtalk.git` at `1e52154e` into straylight-voice `downloads/`), `listen/tts/stage.sh` (needs `KOKORO_ONNX_DIR` = onnx-community/Kokoro-82M-v1.0-ONNX at `1939ad2a`, a `PYTHON` with onnx, misaki[en,ja,zh] 0.9.4, g2p_en, pypinyin for the table export, and `ORT_LIB` = sherpa-onnx v2.0.1 linux-aarch64's `libonnxruntime.so`, ONNX Runtime 1.28.2), then `scripts/build-aarch64.sh --release --manifest-path listen/Cargo.toml --features asr,tts`.
+2. Overlay, in addition to the voice-pipeline list: `usr/local/lib/straylight-listen/libonnxruntime.so` (35 MB); `usr/local/share/straylight-listen/kokoro-v1.0-uint8.onnx` (170 MB), `voices/` (af_*, jf_*, zf_*: 9.5 MB), `tts/` (en-us.lex, en-extra.lex, g2p-en.bin, zh-*.tsv, ja-words.txt, lexicon.tsv, open_jtalk_dic/ with its COPYING: 81 MB); the new `etc/systemd/system/straylight-listen.service` (MemoryMax 1600M, MemoryLow 1500M) and `etc/straylight-listen.conf`. Checksums: `out/listen/tts-share/SHA256SUMS`. +296 MB on root.
+3. Optional: `etc/straylight-listen.d/lexicon.tsv` for local pronunciations.
+4. No new packages (alsa-lib is already needed; ONNX Runtime is the shipped .so; no espeak-ng).
+5. `/var/lib/straylight-listen/tts-cache/` is made by the service (its state directory).
+
+## Licences
+
+- Kokoro-82M v1.0, model and voices: Apache-2.0 (hexgrad). onnx-community's ONNX export: Apache-2.0.
+- ONNX Runtime: MIT. `ort` crate: MIT or Apache-2.0. jieba-rs: MIT. unicode-normalization, unicode-segmentation: MIT or Apache-2.0.
+- misaki (the ported code, the gold/silver lexicons, ja_words.txt): Apache-2.0; its cutlet code is from polm/cutlet (MIT), its pinyin-to-IPA from pinyin-to-ipa (MIT), cn2an's rules (MIT).
+- g2p_en and its network: Apache-2.0 (trained on CMUdict, BSD-2-Clause).
+- Open JTalk's MeCab and the NAIST Japanese Dictionary: BSD 3-clause.
+- pypinyin's tables, jieba's dictionary: MIT.
+- espeak-ng (GPL-3.0) is not used or shipped: g2p_en replaces misaki's espeak fallback, so no GPL code runs in the listener and no out-of-process GPL program is needed. UniDic (for the Python reference only) is not shipped.
+
+## Scripts (Kokoro)
+
+| Script | What |
+| --- | --- |
+| `scripts/kokoro-onnx-durations.py` | add the durations output to an onnx-community export |
+| `scripts/kokoro-frontend-data.py` | export the front-end tables (misaki, g2p_en, pypinyin) |
+| `scripts/kokoro-reference.py` | Python misaki phonemes, PyTorch renders (laptop) |
+| `scripts/kokoro-g2p-compare.py` | our phonemes against misaki's |
+| `scripts/kokoro-profile.py` | ONNX Runtime profile by module |
+| `scripts/kokoro-asr-check.py` | ASR round trip of rendered lines |
+| `scripts/kokoro-voices.py` | voice measurements for the samples INDEX |
+| `scripts/device-kokoro.sh push\|run\|pull\|clean` | payload and capped, detached runs on the tablet |
+| `scripts/device-kokoro-e2e.sh TAG WAV...` | the whole pipeline from files, with memory sampling |
+| `scripts/device-kokoro-acoustic.sh TAG CLIP` | one request through the air at amp 187 |
+| `cases/kokoro-lines.tsv`, `cases/kokoro-g2p.tsv` | sample lines; front-end parity set |
+
+Downloads (`downloads/`, git-ignored): `kokoro/` (both Hugging Face repos at the revisions above, SHA-256 checked against the LFS pointers), `kokoro-venv/` (kokoro 0.9.4, misaki 0.9.4, torch 2.8 CPU, UniDic 3.1.0, en_core_web_sm 3.8.0, onnxruntime 1.31.1), `nltk_data/`.
+
+## Left on the device (Kokoro)
+
+The installed listener with speech (above), enabled and running; `/usr/local/lib/straylight-listen/libonnxruntime.so`; Kokoro, voices and `tts/` under `/usr/local/share/straylight-listen/`; `/var/lib/straylight-listen/tts-cache/` (20 fixed-line pieces); the unit with MemoryMax 1600M / MemoryLow 1500M. The test payloads (`/var/tmp/kokoro`, `/var/tmp/kokoro-e2e`) were removed; the speaker amp is at the user's 207.
