@@ -58,6 +58,7 @@ def die(msg):
 
 
 def load_blobs_module():
+    sys.dont_write_bytecode = True      # no __pycache__ next to the stage-B tools
     path = os.path.join(ROOT, "streams", "stage-b", "make-gpt-blobs.py")
     spec = importlib.util.spec_from_file_location("make_gpt_blobs", path)
     mod = importlib.util.module_from_spec(spec)
