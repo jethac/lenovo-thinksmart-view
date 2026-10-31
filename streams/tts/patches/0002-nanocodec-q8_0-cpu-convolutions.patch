@@ -1,0 +1,206 @@
+diff --git a/src/tts/nanocodec/model.cpp b/src/tts/nanocodec/model.cpp
+index adafafa..e059fd5 100644
+--- a/src/tts/nanocodec/model.cpp
++++ b/src/tts/nanocodec/model.cpp
+@@ -84,6 +84,11 @@ struct nc_conv {
+     // Optional F32 transposed-convolution weights [cin_pad, K * Cout] (row k * Cout + co) for the
+     // CPU GEMM + overlap-add path (nc_conv_transpose_full).
+     ggml_tensor* wt_cpu = nullptr;
++    // Optional Q8_0 weights [K * Cin, Cout] for the CPU backend (NANOCODEC_CPU_Q8=1): the conv
++    // runs as an F32 im2col and a matmul with the quantised weight as src0, instead of an F16
++    // im2col and an F16 x F16 matmul, which is slow on CPUs without FP16 arithmetic.
++    ggml_tensor* wq_cpu = nullptr;
++    ggml_tensor* wq_shape = nullptr;  // [K, Cin padded], gives ggml_im2col the kernel shape
+     int stride = 1;
+     int dilation = 1;
+ };
+@@ -130,6 +135,8 @@ struct nc_model {
+     ggml_backend_buffer_t pack_buffer = nullptr;
+     ggml_context* cpu_pad_ctx = nullptr;  // channel-padded conv weights (CPU backend)
+     ggml_backend_buffer_t cpu_pad_buffer = nullptr;
++    ggml_context* cpu_q8_ctx = nullptr;  // Q8_0 conv weights (CPU backend, NANOCODEC_CPU_Q8=1)
++    ggml_backend_buffer_t cpu_q8_buffer = nullptr;
+     ggml_context* group_ctx =
+         nullptr;  // grouped fused-conv tensors (weights, biases, snake params)
+     ggml_backend_buffer_t group_buffer = nullptr;
+@@ -598,6 +605,127 @@ nc_prepare_cpu_conv_weights(nc_model& model, bool verbose) {
+     }
+ }
+ 
++static bool
++nc_cpu_q8_enabled() {
++    const char* e = std::getenv("NANOCODEC_CPU_Q8");
++    return e && e[0] == '1';
++}
++
++// Q8_0 copies of the CPU conv weights (NANOCODEC_CPU_Q8=1): stride-1 convolutions with
++// K * Cin a multiple of the Q8_0 block, and the transposed convolutions' GEMM weights (wt_cpu,
++// rows padded to a whole block).
++static void
++nc_prepare_cpu_q8_weights(nc_model& model, bool verbose) {
++    if (!model.backend || !ggml_backend_is_cpu(model.backend) || !nc_cpu_q8_enabled()) {
++        return;
++    }
++    const int64_t qk = ggml_blck_size(GGML_TYPE_Q8_0);
++    std::vector<nc_conv*> convs, transposed;
++    auto consider = [&](nc_conv& c) {
++        if (c.w && c.w->type == GGML_TYPE_F16 && c.stride == 1 && ggml_is_contiguous(c.w)) {
++            convs.push_back(&c);
++        }
++    };
++    consider(model.pre_conv);
++    for (nc_res_layer& layer : model.res_layers) {
++        for (auto& stack : layer.by_kernel) {
++            for (nc_res_block& block : stack) {
++                consider(block.input_conv);
++                consider(block.skip_conv);
++            }
++        }
++    }
++    consider(model.post_conv);
++    for (nc_conv& c : model.up_convs) {
++        if (c.wt_cpu && c.wt_cpu->ne[0] % qk == 0) {
++            transposed.push_back(&c);
++        }
++    }
++    if (convs.empty() && transposed.empty()) {
++        return;
++    }
++    ggml_init_params params = {
++        ggml_tensor_overhead() * (2 * convs.size() + transposed.size() + 1), nullptr, true};
++    model.cpu_q8_ctx = ggml_init(params);
++    // Input channels are zero-padded to a multiple of the block so that every row (K * Cin) is
++    // whole blocks; the kernel sizes are odd.
++    std::vector<ggml_tensor*> qc, qs, qt;
++    for (nc_conv* c : convs) {
++        const int64_t cin_pad = (c->w->ne[1] + qk - 1) / qk * qk;
++        ggml_tensor* t = ggml_new_tensor_2d(
++            model.cpu_q8_ctx, GGML_TYPE_Q8_0, c->w->ne[0] * cin_pad, c->w->ne[2]);
++        ggml_set_name(t, (std::string(ggml_get_name(c->w)) + ".q8").c_str());
++        qc.push_back(t);
++        ggml_tensor* sh = ggml_new_tensor_2d(model.cpu_q8_ctx, GGML_TYPE_F16, c->w->ne[0], cin_pad);
++        ggml_set_name(sh, (std::string(ggml_get_name(c->w)) + ".q8shape").c_str());
++        qs.push_back(sh);
++    }
++    for (nc_conv* c : transposed) {
++        ggml_tensor* t = ggml_new_tensor_2d(
++            model.cpu_q8_ctx, GGML_TYPE_Q8_0, c->wt_cpu->ne[0], c->wt_cpu->ne[1]);
++        ggml_set_name(t, (std::string(ggml_get_name(c->wt_cpu)) + ".q8").c_str());
++        qt.push_back(t);
++    }
++    model.cpu_q8_buffer = ggml_backend_alloc_ctx_tensors(model.cpu_q8_ctx, model.backend);
++    if (!model.cpu_q8_buffer) {
++        fprintf(stderr, "warning: could not allocate Q8_0 NanoCodec conv weights\n");
++        ggml_free(model.cpu_q8_ctx);
++        model.cpu_q8_ctx = nullptr;
++        return;
++    }
++    std::vector<ggml_fp16_t> h;
++    std::vector<float> f;
++    std::vector<uint8_t> q;
++    auto quantize = [&](ggml_tensor* dst, int64_t nrows, int64_t n_per_row) {
++        q.resize(ggml_row_size(GGML_TYPE_Q8_0, n_per_row) * nrows);
++        ggml_quantize_chunk(GGML_TYPE_Q8_0, f.data(), q.data(), 0, nrows, n_per_row, nullptr);
++        ggml_backend_tensor_set(dst, q.data(), 0, q.size());
++    };
++    for (size_t i = 0; i < convs.size(); ++i) {
++        nc_conv* c = convs[i];
++        // [K, Cin, Cout] contiguous: row co is (ci * K + k), the order of ggml_im2col's columns.
++        const int64_t K = c->w->ne[0], cin = c->w->ne[1], cout = c->w->ne[2];
++        const int64_t cin_pad = qs[i]->ne[1];
++        h.resize((size_t)ggml_nelements(c->w));
++        ggml_backend_tensor_get(c->w, h.data(), 0, h.size() * sizeof(ggml_fp16_t));
++        f.assign((size_t)(K * cin_pad * cout), 0.0f);
++        for (int64_t co = 0; co < cout; ++co) {
++            for (int64_t j = 0; j < cin * K; ++j) {
++                f[(size_t)(co * cin_pad * K + j)] = ggml_fp16_to_fp32(h[(size_t)(co * cin * K + j)]);
++            }
++        }
++        quantize(qc[i], cout, K * cin_pad);
++        c->wq_cpu = qc[i];
++        c->wq_shape = qs[i];
++        c->w_cpu = nullptr;
++    }
++    for (size_t i = 0; i < transposed.size(); ++i) {
++        nc_conv* c = transposed[i];
++        f.resize((size_t)ggml_nelements(c->wt_cpu));
++        ggml_backend_tensor_get(c->wt_cpu, f.data(), 0, f.size() * sizeof(float));
++        quantize(qt[i], c->wt_cpu->ne[1], c->wt_cpu->ne[0]);
++        c->wt_cpu = qt[i];
++    }
++    if (verbose) {
++        fprintf(stderr, "nanocodec: Q8_0 CPU weights for %zu convolutions and %zu transposed\n",
++                convs.size(), transposed.size());
++    }
++}
++
++// y [T_out, Cout, 1] = conv1d(x) without bias; x already padded in time (and channels).
++static ggml_tensor*
++nc_cpu_conv1d(ggml_context* ctx, const nc_conv& conv, ggml_tensor* x) {
++    if (!conv.wq_cpu) {
++        return ggml_conv_1d(ctx, conv.w_cpu ? conv.w_cpu : conv.w, x, conv.stride, 0, conv.dilation);
++    }
++    ggml_tensor* cols = ggml_im2col(
++        ctx, conv.wq_shape, x, conv.stride, 0, 0, 0, conv.dilation, 0, false, GGML_TYPE_F32);
++    // cols [K * Cin, T_out, 1]; result [Cout, T_out] -> [T_out, Cout, 1]
++    ggml_tensor* y = ggml_mul_mat(ctx, conv.wq_cpu, ggml_reshape_2d(ctx, cols, cols->ne[0], cols->ne[1]));
++    y = ggml_cont(ctx, ggml_transpose(ctx, y));
++    return ggml_reshape_3d(ctx, y, y->ne[0], y->ne[1], 1);
++}
++
+ static bool
+ nc_model_load(
+     const std::string& fname, nc_model& model, bool force_cpu = false, bool verbose = false) {
+@@ -792,6 +920,7 @@ nc_model_load(
+     model.post_conv = load_conv(model, "dec.post");
+     nc_pack_fused_conv_weights(model, verbose);
+     nc_prepare_cpu_conv_weights(model, verbose);
++    nc_prepare_cpu_q8_weights(model, verbose);
+ 
+     if (verbose) {
+         fprintf(
+@@ -805,6 +934,14 @@ nc_model_load(
+ 
+ static void
+ nc_model_free(nc_model& model) {
++    if (model.cpu_q8_buffer) {
++        ggml_backend_buffer_free(model.cpu_q8_buffer);
++        model.cpu_q8_buffer = nullptr;
++    }
++    if (model.cpu_q8_ctx) {
++        ggml_free(model.cpu_q8_ctx);
++        model.cpu_q8_ctx = nullptr;
++    }
+     if (model.cpu_pad_buffer) {
+         ggml_backend_buffer_free(model.cpu_pad_buffer);
+         model.cpu_pad_buffer = nullptr;
+@@ -870,6 +1007,9 @@ new_graph_context() {
+ // Zero input channels needed by a channel-padded CPU weight (nc_conv::w_cpu).
+ static int
+ nc_cpu_channel_pad(const nc_conv& conv, const ggml_tensor* x) {
++    if (conv.wq_shape) {
++        return (int)(conv.wq_shape->ne[1] - x->ne[1]);
++    }
+     return conv.w_cpu ? (int)(conv.w_cpu->ne[1] - x->ne[1]) : 0;
+ }
+ 
+@@ -879,8 +1019,7 @@ causal_conv1d(ggml_context* ctx, ggml_tensor* x, const nc_conv& conv) {
+     const int left_pad = (kernel - 1) * conv.dilation;
+     ggml_tensor* padded =
+         ggml_pad_ext(ctx, x, left_pad, 0, 0, nc_cpu_channel_pad(conv, x), 0, 0, 0, 0);
+-    ggml_tensor* y =
+-        ggml_conv_1d(ctx, conv.w_cpu ? conv.w_cpu : conv.w, padded, conv.stride, 0, conv.dilation);
++    ggml_tensor* y = nc_cpu_conv1d(ctx, conv, padded);
+     y = ggml_add(ctx, y, conv.b);
+     return y;
+ }
+@@ -1238,8 +1377,7 @@ nc_stream_causal_conv1d(
+     if (const int channel_pad = nc_cpu_channel_pad(conv, conv_in)) {
+         conv_in = ggml_pad(ctx, conv_in, 0, channel_pad, 0, 0);
+     }
+-    ggml_tensor* y =
+-        ggml_conv_1d(ctx, conv.w_cpu ? conv.w_cpu : conv.w, conv_in, conv.stride, 0, conv.dilation);
++    ggml_tensor* y = nc_cpu_conv1d(ctx, conv, conv_in);
+     y = ggml_add(ctx, y, conv.b);
+     return y;
+ }

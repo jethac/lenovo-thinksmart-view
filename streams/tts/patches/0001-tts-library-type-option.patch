@@ -1,0 +1,22 @@
+diff --git a/src/tts/magpietts/CMakeLists.txt b/src/tts/magpietts/CMakeLists.txt
+index 640ecdc..097c5e9 100644
+--- a/src/tts/magpietts/CMakeLists.txt
++++ b/src/tts/magpietts/CMakeLists.txt
+@@ -1,5 +1,8 @@
+ # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ # SPDX-License-Identifier: Apache-2.0
++# SHARED by default; STATIC for fully static executables.
++set(NEMO_SPEECH_TTS_LIBRARY_TYPE SHARED CACHE STRING "Library type of nemo_speech_tts (SHARED or STATIC)")
++
+ set(MAGPIETTS_MODEL_SOURCES
+     audio_pp.cpp
+     decoder.cpp
+@@ -8,7 +11,7 @@ set(MAGPIETTS_MODEL_SOURCES
+     model.cpp
+ )
+ 
+-add_library(nemo_speech_tts SHARED
++add_library(nemo_speech_tts ${NEMO_SPEECH_TTS_LIBRARY_TYPE}
+     ${MAGPIETTS_MODEL_SOURCES}
+     config.cpp
+     ../c_api.cpp

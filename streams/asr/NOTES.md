@@ -110,13 +110,107 @@ Left open:
 - The last, partial chunk still runs a full 100-frame conv stem at finalize (about 260 ms). A narrower graph for it would need care to stay bit-exact at its padded edge (padding positions carry GELU(bias), not zero, after the first conv).
 - The transformer attends over the whole utterance (as the reference's eager path, not `n_window_infer` windows), so it cannot start before the end of speech.
 
+## Phrase by phrase
+
+Text a phrase at a time while the user is still speaking, with Qwen3-ASR only: Silero VAD cuts the incoming audio at short pauses, and each phrase is transcribed on its own as soon as it ends, while the next one is still being spoken. The final transcript is the joined phrases.
+
+### Program
+
+`phrase/phrase-stream.cpp`, built by `phrase/build.sh [a53|native]` (into `work/build-phrase-a53` or `work/build-phrase-native`). It links transcribe.cpp as a library through its public API only (`include/transcribe.h`, `include/transcribe/vad.h`). The build uses its own snapshot of the pinned commit (`git archive` into `work/phrase-src/`, plus `patches/*.patch` applied with `patch`), so work in progress in `downloads/transcribe.cpp` does not reach it.
+
+- Models: `Qwen3-ASR-0.6B-Q4_K_M-convq8.gguf` and `silero-vad-v6.2-F32.gguf` (`handy-computer/silero-vad-v6.2-gguf`, 1.2 MB, sha256 checked, in `downloads/models/silero-vad-v6.2/`). transcribe.cpp has Silero built in (`--vad-threshold` in the CLI is that model), with a streaming API that returns one speech probability per 32 ms frame, so no onnxruntime or sherpa-onnx is needed. Both models stay loaded for the life of the process; one ASR session and one VAD session (1 thread) are reused for every phrase and utterance, after a warm-up run.
+- Feeding: 20 ms slices, each handed over when it would have finished arriving from a microphone (`sleep_until` on an absolute schedule; `--no-realtime` feeds as fast as possible). The feeding thread runs the VAD and the segmenter; a worker thread transcribes phrases from a queue in order.
+- Segmenter (Silero `get_speech_timestamps` logic on streamed probabilities): speech starts at p >= 0.5; inside speech, p < 0.35 starts a pause. A pause of `--min-pause` 300 ms ends the phrase, if the phrase has at least `--min-phrase` 1000 ms of audio; a shorter phrase waits for the next pause and is merged with what follows, unless the pause reaches `--long-pause` 800 ms. A phrase reaching `--max-phrase` 6000 ms (below the encoder's 8 s attention window) is split at the frame with the lowest speech probability in its second half, and the rest continues as the next phrase. `--pad` 200 ms of audio is kept before and after each phrase (never overlapping the previous phrase). Phrases with less than 250 ms of speech are dropped as noise.
+- Transcription: `transcribe_run` on the phrase's audio with `language = NULL` (the model detects the language per phrase; `transcribe_detected_language` is recorded) and the text so far as context (`transcribe_run_params::prompt`, `--context`: -1 all, 0 none, N last N bytes). Phrase texts are joined with a space only between two Latin-script ends.
+- Output: one JSON line per input WAV on stdout: per phrase its audio span, VAD speech end, whether it was a forced split, the times the cut was made, transcription started and text was ready (ms from the start of the audio), mel/encode/decode times, context bytes, language and text; the joined text; feed lateness, process CPU time during the audio and in total, ASR busy time, peak RSS; and with the default `--offline`, a whole-utterance `transcribe_run` of the same audio afterwards (today's path) for comparison. Each phrase text is also printed to stderr the moment it is ready.
+
+Not available through the public API (worked around or left out, not patched):
+- Qwen3-ASR does not have `TRANSCRIPT_PREFIX` (`--prefix` is an error for this family, `docs/prompting.md`); it has `CONTEXT_PROMPT` (`--prompt`), which puts the text in the system message. That is what is used. A transcript prefix would not fit anyway: it requires the audio to contain the prefix's speech.
+- No way to keep the KV cache of the prompt between runs: the chat frame (15 tokens) and the context are prefilled again for every phrase, at about 34 ms per token on this CPU. The context comes before the audio in the prompt, so a cached, growing system-message prefix would remove most of its cost.
+- No way to restrict language detection to a set (en/ja/zh); no per-run thread count; Qwen3-ASR does not report `supports_spec_decode`, so `spec_k_drafts` has no effect for it.
+- At most one run in flight per model: a phrase cannot be encoded while the previous phrase is still decoding unless a second model instance is loaded (another ~600 MB).
+
+### Test utterances
+
+`scripts/make-phraseset.py` writes 33 utterances to `work/testset/phrase/` (`refs.tsv` for `score.py`, `parts.tsv` with each part's language, span and reference):
+- en 1-4, ja 1-7, zh 1-5: 2-4 clips of the command sets (edges trimmed to speech) joined with 300-700 ms gaps of low-level brown noise (-54 dBFS, not digital silence); 8.7-16.8 s.
+- mx 1-8: the same, mixing languages (en+ja, ja+en, en+zh, zh+en, en+ja+en, zh+ja, ja+zh, en+zh+en); 8.4-14.0 s.
+- lx-en/ja/zh 1-3: single 12-18 s LibriSpeech test-clean and FLEURS clips with their natural pauses.
+
+Every clip is brought to a speech level of -22 dBFS first (as a microphone AGC would): four of the FLEURS Japanese clips sit at about -55 dBFS, at the level of the added noise, and Silero gave them speech probabilities of 0.2-0.4. With levelled audio, VAD thresholds 0.5 and 0.35 and pauses of 250-500 ms all cut at every clip boundary (no phrase spans two clips); longer pauses give fewer cuts inside the long clips and more forced splits.
+
+Run on the device with `scripts/device-phrase.sh TAG [options]` (under the lock, `/dev/shm`, cleaned up), summarise with `scripts/phrase-summary.py RESULTS.jsonl [--per-utt]`.
+
+### Results on the device
+
+Defaults above (300 ms pause, 200 ms padding, full context), 8 threads, real-time feeding, 2026-10-31. Medians over utterances; caption lag over phrases. Caption lag = end of the phrase's speech (VAD) to its text. End wait = end of the last speech (offline VAD over the clip, unpadded) to the final text; offline wait = the same 300 ms of silence it needs to know the speech ended + whole-utterance transcription. Accuracy is corpus-level (WER for English, CER otherwise; mixed utterances as CER).
+
+| Set | Utts | Audio | Phrases | Phrase length | Caption lag | First phrase lag | End wait, phrases | End wait, offline | Phrase-joined | Offline |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| en | 4 | 12.2 s | 4 | 2.4 s | 6.61 s | 4.51 s | **9.11 s** | 16.67 s | WER 2.08 % | WER 2.08 % |
+| ja | 7 | 15.7 s | 2 | 3.5 s | 7.18 s | 7.54 s | **7.87 s** | 19.19 s | CER 9.79 % | CER 7.72 % |
+| zh | 5 | 15.5 s | 3 | 3.7 s | 7.75 s | 6.20 s | **9.77 s** | 20.85 s | CER 3.36 % | CER 2.24 % |
+| mixed | 8 | 11.8 s | 2 | 3.0 s | 6.86 s | 4.98 s | **7.56 s** | 14.98 s | **CER 4.77 %** | CER 18.14 % |
+| long en | 3 | 17.8 s | 4 | 3.4 s | 12.55 s | 9.04 s | **18.66 s** | 23.57 s | WER 3.36 % | WER 1.68 % |
+| long ja | 3 | 14.3 s | 2 | 3.9 s | 10.65 s | 8.97 s | **12.39 s** | 18.75 s | CER 18.79 % | CER 18.12 % |
+| long zh | 3 | 15.2 s | 3 | 3.2 s | 8.76 s | 7.05 s | **12.56 s** | 19.18 s | CER 6.45 % | CER 5.65 % |
+
+Mixed utterances scored per part (each phrase assigned to the part it overlaps most): English WER 1.89 %, Japanese/Mandarin CER 9.60 %.
+
+Keeping up. Each phrase costs about 1.8 x its audio (encoder ~0.5 x, decoder the rest), against 1.3-1.6 x for whole clips offline: every phrase pays the chat-frame prefill again and decodes its own `language X<asr_text>` header (~4 steps of 100 ms). So processing does not keep up with continuous speech; the pauses absorb part of it, and the queue grows over an utterance:
+
+| Phrase in utterance | Phrases | Caption lag | Waiting in queue | Transcription | Transcription / audio |
+| --- | --- | --- | --- | --- | --- |
+| 1st | 33 | 6.32 s | 0.00 s | 5.98 s | 1.67 |
+| 2nd | 33 | 7.87 s | 1.06 s | 6.19 s | 1.79 |
+| 3rd | 19 | 9.54 s | 3.22 s | 5.72 s | 1.93 |
+| 4th | 6 | 11.83 s | 6.59 s | 5.08 s | 2.14 |
+| 5th | 1 | 18.79 s | 13.15 s | 5.31 s | 2.42 |
+
+The ratio is worse for short phrases (1-2 s: 2.1 x; 5-6 s: 1.5 x). Total ASR compute over all phrases is 0.90 x that of the whole-utterance run (the offline run also encodes the pauses and attends over the whole utterance), so splitting costs nothing in total work; the end-of-speech wait is shorter only because most of the work is done during the speech. With 4+ phrases (long English monologues) the backlog at the end of speech is most of the wait.
+
+Load while the user speaks: the process uses 62 % of the 8 cores on average during the audio (the ASR worker is busy 63 % of the time and ggml's threads busy-wait while it is); between phrases it is idle apart from VAD. The feeding/VAD thread was never more than 41 ms late against the real-time schedule with all 8 ASR threads busy. Peak RSS 1485 MiB, which includes the whole-utterance comparison run of up to 18 s; the phrase path alone was not measured separately (the model loaded is 925 MiB; a 7 s clip offline peaks at 1087 MiB, and phrases are at most 6 s). The device warmed from 36 to 54 °C over the 25 min run, with no throttling.
+
+Language detection: the language is right for every phrase in every set (19 of 19 phrases in the mixed utterances, 92 of 92 in total). The whole-utterance run picks one language for a mixed utterance (ja or zh in all 8) and writes the other language's speech in it, e.g. `what already here they said to her。軍刀や湖水では…` or, on the laptop, an English "translation" of the Japanese part; that is where its 18 % CER comes from. For code-switching, phrase splitting is much more accurate than the whole-utterance path.
+
+Where splitting costs accuracy (long clips): words at a cut are lost or changed (`of fair complexion` -> `A fair complexion`; `并配以` -> `并配`; a forced split in the middle of `観測できるように`), and each phrase is punctuated as a sentence. Within a phrase the transcripts are the same as offline.
+
+### Padding and context (laptop, accuracy only)
+
+Same segmentation, transcripts from the native build (`--no-realtime`); timing on the laptop is not meaningful.
+
+| Set | Pad 200 ms | Pad 300 ms | Pad 400 ms | Pad 200 ms, no context | Offline |
+| --- | --- | --- | --- | --- | --- |
+| en | WER 2.08 % | WER 2.08 % | WER 2.08 % | WER 2.08 % | WER 2.08 % |
+| ja | CER 8.61 % | CER 8.01 % | CER 8.61 % | CER 9.20 % | CER 7.12 % |
+| zh | CER 3.36 % | CER 2.61 % | CER 2.24 % | CER 3.36 % | CER 2.24 % |
+| mixed | CER 5.49 % | CER 4.53 % | CER 3.58 % | CER 5.01 % | CER 26.97 % |
+| long en | WER 4.20 % | WER 4.20 % | WER 4.20 % | WER 5.04 % | WER 1.68 % |
+| long ja | CER 20.81 % | CER 21.48 % | CER 22.82 % | CER 20.13 % | CER 20.81 % |
+| long zh | CER 6.45 % | CER 8.87 % | CER 6.45 % | CER 8.06 % | CER 4.84 % |
+
+- Padding: no consistent effect between 200 and 400 ms (differences of one or two characters per set; the sets are small). 200 ms is kept, as it adds the least audio per phrase. The post-phrase pad is limited by the 300 ms pause anyway.
+- Context: the text so far helps slightly on the long clips (en 4.20 vs 5.04 % WER, zh 6.45 vs 8.06 % CER) and costs little time on the device (the decode times of the three phrases of en-1 were 3.05, 3.00 and 2.99 s with 0, 33 and 70 bytes of context). Qwen3-ASR 0.6B can echo the context into its output (seen once on the laptop, a whole previous phrase repeated in front of the next one); `--context N` caps it.
+- Not run on the device (the device became unreachable): phrase path without the comparison run (for its own RSS), no context, and a 500 ms pause.
+
+### Recommendation
+
+Use phrase-by-phrase transcription as the recognition path for the chatbot, not as a display-only preview: its final text is available 6-11 s sooner after the end of speech than the whole-utterance run for 12-18 s requests (ja 7.9 vs 19.2 s, zh 9.8 vs 20.9 s, en 9.1 vs 16.7 s), it costs no more total compute, and it is the only one of the two that handles code-switching (CER 4.8 vs 18.1 %). The accuracy cost is small for requests made of separate sentences (en equal, zh +1.1, ja +2.1 points CER) and larger for long continuous sentences cut at short or forced pauses (long English 3.4 vs 1.7 % WER).
+
+Where it falls short:
+- Captions are not live: 6-8 s after each phrase, growing by 1-3 s per phrase in a long request, because a phrase costs 1.8 x its duration. It does not keep up with continuous speech on this CPU. For short commands (one or two phrases, under ~5 s) the result is the same as offline: one phrase, transcribed after the speech.
+- The wait for a single short command is unchanged (the model is the bottleneck, not the method).
+- Words at cuts are occasionally lost; the cut sits in a pause, but weak onsets (`of`, `以`) can fall before the VAD's speech start.
+
+Combining with the incremental conv stem (`patches/0002`): run each phrase through `transcribe_stream_begin/feed/finalize` instead of `transcribe_run`, starting the stream at the phrase's speech onset, so the conv stem (60 % of the encoder) runs while that phrase is spoken and only the transformer and decoder remain at the cut. That would take about 0.8 s off each phrase's 1.8 x (en 2.5 s phrase: 0.5-0.8 s). Two constraints: only one run may be in flight per model, so the conv-stem chunks of phrase n+1 would have to wait for (or be interleaved between) the decode of phrase n, which is exactly when the queue builds; and the context prompt is fixed at `transcribe_stream_begin`, before the previous phrase's text may be ready. The decoder is the larger remaining cost (about 70 % of each phrase); a cached prompt/context prefix and a lower-bit output head (Next 3) help the phrase path more than the offline one, since it pays the prompt once per phrase.
+
 ## The GPU
 
 Not useful for this model: the Adreno 506 reaches about 14 GFLOP/s FP32 in OpenGL ES 3.1 compute shaders, half the CPU's Q8_0 rate, with slow readback and shared memory bandwidth (`../gpu-compute/NOTES.md`).
 
 ## Next
 
-1. Speculative decoding (`--spec-k-drafts`) for the decoder steps.
+1. Speculative decoding (`--spec-k-drafts`) for the decoder steps (Qwen3-ASR does not report `supports_spec_decode` at the pinned commit).
 2. Shorter prompt: 18 of the 80 prefill tokens are prompt.
 3. The output head is 122 MiB of Q6_K read on every decoder step; a lower-bit head would cut step time.
 4. Choose and benchmark a speech synthesiser for English, Japanese and Mandarin; check recognition and synthesis fit in RAM together.

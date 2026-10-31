@@ -1,0 +1,13 @@
+# per language: 1-sentence (n=2) and 3-sentence (n=3) replies, Sofia; 8 threads = decoder 3 + codec 5, 4 threads = decoder 2 + codec 2; Q8_0 codec
+en-2-t8|en-US|3|4|NANOCODEC_CPU_Q8=1|--tts.codec-threads 5|Your next meeting is the quarterly review with Sarah Chen, at two thirty this afternoon in conference room B.
+en-2-t4|en-US|2|4|NANOCODEC_CPU_Q8=1|--tts.codec-threads 2|Your next meeting is the quarterly review with Sarah Chen, at two thirty this afternoon in conference room B.
+en-3-t8|en-US|3|4|NANOCODEC_CPU_Q8=1|--tts.codec-threads 5|Good morning. Your first meeting is the design review at nine thirty, and the budget call has moved to eleven. I have also blocked an hour for lunch at one.
+en-3-t4|en-US|2|4|NANOCODEC_CPU_Q8=1|--tts.codec-threads 2|Good morning. Your first meeting is the design review at nine thirty, and the budget call has moved to eleven. I have also blocked an hour for lunch at one.
+ja-2-t8|ja|3|4|NANOCODEC_CPU_Q8=1|--tts.codec-threads 5|次の会議は、午後二時半から会議室Bで、田中さんとの四半期レビューです。
+ja-2-t4|ja|2|4|NANOCODEC_CPU_Q8=1|--tts.codec-threads 2|次の会議は、午後二時半から会議室Bで、田中さんとの四半期レビューです。
+ja-3-t8|ja|3|4|NANOCODEC_CPU_Q8=1|--tts.codec-threads 5|明日の九時から、Marketingチームとの打ち合わせがあります。Zoomのリンクは、Slackでお送りしました。
+ja-3-t4|ja|2|4|NANOCODEC_CPU_Q8=1|--tts.codec-threads 2|明日の九時から、Marketingチームとの打ち合わせがあります。Zoomのリンクは、Slackでお送りしました。
+zh-2-t8|zh|3|4|NANOCODEC_CPU_Q8=1|--tts.codec-threads 5|您的下一个会议是下午两点半，在三号会议室与陈经理进行季度评审。
+zh-2-t4|zh|2|4|NANOCODEC_CPU_Q8=1|--tts.codec-threads 2|您的下一个会议是下午两点半，在三号会议室与陈经理进行季度评审。
+zh-3-t8|zh|3|4|NANOCODEC_CPU_Q8=1|--tts.codec-threads 5|早上好。您的第一个会议是九点半的设计评审，预算电话会议改到了十一点。中午我还为您留出了一个小时的午餐时间。
+zh-3-t4|zh|2|4|NANOCODEC_CPU_Q8=1|--tts.codec-threads 2|早上好。您的第一个会议是九点半的设计评审，预算电话会议改到了十一点。中午我还为您留出了一个小时的午餐时间。

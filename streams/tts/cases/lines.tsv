@@ -1,0 +1,10 @@
+# id|language|text   (listening samples; the same lines for every speaker)
+en-1|en|Good morning. How can I help you today?
+en-2|en|Your next meeting is the quarterly review with Sarah Chen, at two thirty this afternoon in conference room B.
+en-3|en|Good morning. Your first meeting is the design review at nine thirty, and the budget call has moved to eleven. I have also blocked an hour for lunch at one.
+ja-1|ja|おはようございます。今日は何をお手伝いしましょうか。
+ja-2|ja|次の会議は、午後二時半から会議室Bで、田中さんとの四半期レビューです。
+ja-3|ja|明日の九時から、Marketingチームとの打ち合わせがあります。Zoomのリンクは、Slackでお送りしました。
+zh-1|zh|早上好。今天有什么可以帮您的吗？
+zh-2|zh|您的下一个会议是下午两点半，在三号会议室与陈经理进行季度评审。
+zh-3|zh|早上好。您的第一个会议是九点半的设计评审，预算电话会议改到了十一点。中午我还为您留出了一个小时的午餐时间。

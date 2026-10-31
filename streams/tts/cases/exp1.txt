@@ -1,0 +1,7 @@
+# thread split between the Magpie decoder (threads) and the codec worker (codec-threads); en-2, Sofia
+t8c8|en-US|8|4|||Your next meeting is the quarterly review with Sarah Chen, at two thirty this afternoon in conference room B.
+t4c4|en-US|4|4||--tts.codec-threads 4|Your next meeting is the quarterly review with Sarah Chen, at two thirty this afternoon in conference room B.
+t2c6|en-US|2|4||--tts.codec-threads 6|Your next meeting is the quarterly review with Sarah Chen, at two thirty this afternoon in conference room B.
+t3c5|en-US|3|4||--tts.codec-threads 5|Your next meeting is the quarterly review with Sarah Chen, at two thirty this afternoon in conference room B.
+t3c5q8|en-US|3|4|NANOCODEC_CPU_Q8=1|--tts.codec-threads 5|Your next meeting is the quarterly review with Sarah Chen, at two thirty this afternoon in conference room B.
+t3c5nocfg|en-US|3|4||--tts.codec-threads 5 --tts.no-cfg|Your next meeting is the quarterly review with Sarah Chen, at two thirty this afternoon in conference room B.
