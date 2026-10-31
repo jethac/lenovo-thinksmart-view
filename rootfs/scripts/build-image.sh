@@ -23,12 +23,16 @@ PUBKEY=${PUBKEY:-$HOME/.ssh/id_ed25519_thinksmart.pub}   # becomes ~jethac/.ssh/
 ADB_PUBKEY=${ADB_PUBKEY:-$HOME/.android/adbkey.pub}   # becomes /etc/adbd/adb_keys
 TARBALL=$DL/ArchLinuxARM-aarch64-latest.tar.gz
 IMG=$OUT/thinksmart-alarm-system.img
+# The laptop's /tmp is small and shared; keep every temporary file in the project.
+export TMPDIR=${TSV_TMPDIR:-$WORK/tmp}
+# The GPT 'system' partition after stage B (streams/stage-b): the image must fit it.
+SYSTEM_SECTORS=14264320
 
 if [[ ${1:-} == --inner ]]; then
     # ---- inside the user namespace (uid 0 mapped to the invoking user)
     shift
     "$HERE/build-rootfs.sh" "$TARBALL" "$WORK/rootfs" "$WORK/bootfs" "$WORK/firmware" \
-        "$KSRC" "$KBUILD" "$PUBKEY" "$WORK/adbd/stage" "$ADB_PUBKEY"
+        "$KSRC" "$KBUILD" "$PUBKEY" "$WORK/adbd/stage" "$ADB_PUBKEY" "$WORK/straylight"
     "$HERE/make-image.sh" "$WORK/rootfs" "$WORK/bootfs" "$WORK" "$IMG"
     exit 0
 fi
@@ -46,7 +50,7 @@ done
     [[ $(cut -d' ' -f1 "$ADB_PUBKEY" | base64 -d 2>/dev/null | wc -c) == 524 ]] ||
     { echo "missing or malformed adb public key $ADB_PUBKEY (set ADB_PUBKEY)" >&2; exit 1; }
 
-mkdir -p "$DL" "$WORK" "$OUT"
+mkdir -p "$DL" "$WORK" "$OUT" "$TMPDIR"
 
 echo "== 1/5 fetch and verify Arch Linux ARM"
 "$HERE/fetch-alarm.sh" "$DL"
@@ -54,6 +58,8 @@ echo "== 1/5 fetch and verify Arch Linux ARM"
 echo "== 2/5 fetch, verify and cross-build adbd (Debian android-platform-tools)"
 "$HERE/fetch-adbd.sh" "$DL/adbd-debian"
 "$HERE/build-adbd.sh" "$DL/adbd-debian" "$WORK/adbd"
+echo "== 2b/5 build the Straylight voice assistant at the pinned commit, and its models"
+"$HERE/build-straylight.sh" "$DL/straylight" "$WORK/straylight"
 
 echo "== 3/5 extract firmware from the device backup"
 "$HERE/extract-firmware.sh" "$BACKUP" "$WORK/partitions" "$WORK/firmware" "$WORK/firmware-manifest.tsv"
@@ -77,11 +83,14 @@ unset TSV_JETHAC_HASH
 echo "== 5/5 checksums and listings"
 cp "$WORK/firmware-manifest.tsv" "$OUT/firmware-manifest.tsv"
 "$HERE/inspect-image.sh" "$IMG" > "$OUT/thinksmart-alarm-system.partitions.txt"
+(( $(stat -c %s "$IMG") <= SYSTEM_SECTORS * 512 )) ||
+    { echo "image is larger than the stage-B system partition" >&2; exit 1; }
 (cd "$OUT" && sha256sum "$(basename "$IMG")" > "$(basename "$IMG").sha256")
 cat "$OUT/$(basename "$IMG").sha256"
 
 if [[ -z ${KEEP_WORK:-} ]]; then
     unshare --user --map-root-user --map-auto --mount --pid --fork \
-        rm -rf "$WORK/rootfs" "$WORK/bootfs" "$WORK/partitions" "$WORK/firmware" "$WORK/adbd"
+        rm -rf "$WORK/rootfs" "$WORK/bootfs" "$WORK/partitions" "$WORK/firmware" "$WORK/adbd" \
+            "$WORK/straylight" "$WORK/tmp"
 fi
 echo "done: $IMG"

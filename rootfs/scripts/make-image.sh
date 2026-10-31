@@ -6,11 +6,13 @@
 # Run inside the build user namespace so file ownership is recorded as root.
 #
 #   make-image.sh ROOTFS_DIR BOOTFS_DIR WORK_DIR OUT_IMG
-# Environment: IMAGE_MIB (default 1536 = the stock 'system' partition size,
-# so it also fits before repartitioning), BOOT_MIB (default 128).
+# Environment: IMAGE_MIB (default 3072), BOOT_MIB (default 128).
+# 3072 MiB holds the voice assistant's fonts and models with room to spare, and
+# fits the stage-B 'system' partition (6965 MiB); it no longer fits the stock
+# 1536 MiB one. tsv-growroot grows root to the end of the partition on first boot.
 set -euo pipefail
 R=$1 BOOT=$2 WORK=$3 IMG=$4
-IMAGE_MIB=${IMAGE_MIB:-1536}
+IMAGE_MIB=${IMAGE_MIB:-3072}
 BOOT_MIB=${BOOT_MIB:-128}
 ROOT_MIB=$((IMAGE_MIB - 1 - BOOT_MIB))
 export E2FSPROGS_FAKE_TIME=${SOURCE_DATE_EPOCH:-}

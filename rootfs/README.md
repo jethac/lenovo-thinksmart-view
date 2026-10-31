@@ -2,11 +2,12 @@
 
 An aarch64 Arch Linux ARM system for the Lenovo ThinkSmart View CD-18781Y (APQ8053),
 with the msm8953-mainline 7.3 kernel from `../kernel/build-7.3`, built rootless on the x86_64
-laptop. Nothing in this directory has been on the tablet yet.
+laptop. A freshly written image boots into the Straylight voice assistant (see
+[Voice assistant](#voice-assistant)) with nothing installed by hand.
 
 | | |
 | --- | --- |
-| Image | `out/thinksmart-alarm-system.img`: raw image for the GPT `system` partition, sparse, 1536 MiB |
+| Image | `out/thinksmart-alarm-system.img`: raw image for the GPT `system` partition, sparse, 3072 MiB (needs the stage-B layout) |
 | Checksum | `out/thinksmart-alarm-system.img.sha256` |
 | Partition listing | `out/thinksmart-alarm-system.partitions.txt` |
 | Firmware manifest | `out/firmware-manifest.tsv` |
@@ -20,14 +21,16 @@ scheme as the Ubuntu port and postmarketOS:
 
 | MBR part | Start (sector) | Size | FS | Label | Mounted at | Contents |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 (boot flag) | 2048 | 128 MiB | ext2 (`filetype,sparse_super,large_file` only, 4 KiB blocks) | `tsv-boot` | `/boot` | `extlinux/extlinux.conf`, `Image.gz`, `initramfs-tsv.img`, `dtbs/qcom/apq8053-lenovo-cd-18781y.dtb`, `config-7.3.0-g755ffc44d5d8` |
+| 1 (boot flag) | 2048 | 128 MiB | ext2 (`filetype,sparse_super,large_file` only, 4 KiB blocks) | `tsv-boot` | `/boot` | `extlinux/extlinux.conf`, `Image.gz`, `initramfs-tsv.img`, `dtbs/qcom/apq8053-lenovo-cd-18781y.dtb`, `config-7.3.0-g755ffc44d5d8-dirty` |
 | 2 | 264192 | rest (1.37 GiB in the image) | ext4 | `tsv-root` | `/` | Arch Linux ARM |
 
-- **Size.** The image is 1536 MiB, exactly the size of the stock `system` partition
-  (3145728 sectors), so it can be written before or after repartitioning. On first boot
-  `tsv-growroot.service` extends MBR partition 2 to the end of whatever GPT partition holds the
-  image and grows ext4 online. Under the rickx layout (`system` = 14280671 sectors, 6.81 GiB),
-  root ends up at about 6.68 GiB. Today about 965 MiB of root is used.
+- **Size.** The image is 3072 MiB (`IMAGE_MIB`, `make-image.sh`). That no longer fits the
+  stock `system` partition (1536 MiB), only the stage-B one (`streams/stage-b`: 14264320
+  sectors, 6965 MiB); `build-image.sh` fails if the image would not fit it. On first boot
+  `tsv-growroot.service` extends MBR partition 2 to the end of the GPT partition that holds the
+  image and grows ext4 online, so root ends up at about 6.68 GiB. In the image, root is a 2943 MiB
+  ext4 with 2069 MiB used (873 MiB free); the voice assistant accounts for about 1 GiB of that
+  (fonts 406 MiB, models 579 MB, binaries 25 MiB). The image is sparse: 2.0 GiB allocated.
 - **How Linux finds root.** Linux does not scan a partition table nested inside a partition.
   The initramfs hook `tsv-subpart` (`scripts/overlay/etc/initcpio/hooks/tsv-subpart`) runs
   `losetup -f -P --direct-io=on` on `PARTLABEL=system`. That makes the two filesystems appear
@@ -96,9 +99,11 @@ This is what that lk2nd does:
 - **Removed:** `linux-aarch64`, all `linux-firmware*` (about 970 MiB, none of it used here),
   `netctl` and `dhcpcd`.
 - **Added:** `networkmanager` (pulls in `wpa_supplicant`), `dnsmasq`, `sudo`, `wireless-regdb`,
-  `iw`, `plymouth` (boot splash; 28 packages with its dependencies). `mkinitcpio` is kept. That
-  makes 200 packages in total, and no desktop.
-- **Kernel.** `7.3.0-g755ffc44d5d8`, copied from `../kernel/build-7.3` without rebuilding
+  `iw`, `plymouth` (boot splash; 28 packages with its dependencies); PipeWire, WirePlumber,
+  `alsa-ucm-conf`, `alsa-utils`, `v4l-utils`; for the voice assistant `libinput` (with `mtdev`,
+  `libwacom`, `libgudev`, `lua54`), `noto-fonts` and `noto-fonts-cjk`. `mkinitcpio` is kept.
+  221 packages in total, and no desktop.
+- **Kernel.** `7.3.0-g755ffc44d5d8-dirty`, copied from `../kernel/build-7.3` without rebuilding
   (`Image.gz` and DTB). The 686 modules were installed with `make ... INSTALL_MOD_STRIP=1
   modules_install` into `/usr/lib/modules`. Stripped, they take 38 MiB instead of 508 MiB.
 - **Initramfs** (mkinitcpio, `HOOKS=(base udev modconf plymouth tsv-subpart fsck)` in
@@ -138,6 +143,9 @@ This is what that lk2nd does:
   - The pacman keyring is not shipped; `tsv-pacman-keyring.service` runs `pacman-key --init`
     and `--populate archlinuxarm`.
   - `tsv-growroot.service` grows root.
+- **OOM protection.** Drop-ins `10-tsv-oom.conf` give `tsv-adbd`, `NetworkManager` and
+  `systemd-networkd` `OOMScoreAdjust=-900` (sshd already runs at -1000), so a global OOM can only
+  pick the voice pipeline (`straylight-listen`, +500, `MemoryMax=1300M`), which restarts.
 - **Network stack.** NetworkManager handles Wi-Fi, rather than iwd plus systemd-networkd.
   It was chosen when Omarchy (which uses NetworkManager and disables iwd and `systemd-networkd`)
   was still planned; Omarchy has since been dropped (`GOAL.md`), and NetworkManager stays
@@ -625,6 +633,144 @@ still the last file in that directory; without `tsv-subpart` the device does not
 - That brightness 2000 is a comfortable idle level, and whether the 1200 cutoff is real.
 - The colours of the red accent on this panel.
 
+## Voice assistant
+
+The image carries the whole Straylight stack from the `straylight-voice` repository
+(`github.com/jethac/straylight-voice`), enabled, so the first boot ends on its Idle screen:
+
+| Program | Unit (enabled) | What |
+| --- | --- | --- |
+| `straylight-voice`, `straylight-voicectl` | `straylight-voice.service` (`graphical.target`, alias `display-manager.service`) | the screen: Slint on DRM/KMS, touch through libinput |
+| `straylight-listen` | `straylight-listen.service` | "Hey Straylight", Qwen3-ASR, the reply on screen; no network |
+| `straylight-aiand` | `straylight-aiand.service` | the only holder of ai& credentials and the only process on the internet |
+| `straylight-wifi` | `straylight-wifi.service` (user `straylight-wifi`) | the Wi-Fi picker, NetworkManager over D-Bus |
+
+### Built from a pinned commit
+
+`scripts/build-straylight.sh` (step 2b of `build-image.sh`) builds it from source rather than
+taking binaries from somebody's working tree:
+
+- **Pins** (`scripts/straylight/pins.sh`): straylight-voice `3e3b9d0e` and its path dependency
+  `thinksmart-view-hal` `56090578`. straylight-voice pins the rest itself: the Slint fork at
+  `56ba0eb3` plus its `patches/slint/`, transcribe.cpp at `5700f127` plus `listen/asr/patches/`,
+  and `Cargo.lock` (cargo runs with `--locked`).
+- **How.** Clean clones in `downloads/straylight/src/` checked out detached at the pins (the
+  script fails if a tracked file differs, before or after the build), then straylight-voice's own
+  scripts in its own order: `fetch-packages.sh` (Arch Linux ARM packages, SHA-256 and signature
+  checked with the key `fetch-alarm.sh` verified), `make-sysroot.sh` on top of the ASR stream's
+  glibc sysroot (`streams/asr/scripts/make-sysroot.sh`, from the verified Debian `.deb`s),
+  `make-fonts.sh`, `prepare-slint.sh`, `listen/asr/build.sh aarch64`, and
+  `build-aarch64.sh --release --locked` for the screen, the listener (`--features asr`), the
+  ai& client and the Wi-Fi service. Python tools come from a venv with pinned versions
+  (`fonttools`, `onnx`, `gguf`, `numpy`). The wordmark is `assets/aiand-wordmark-white.svg`.
+- **Why build, not copy.** The binaries on the tablet were installed from a developer tree: the
+  screen reports `3e3b9d0-dirty` (uncommitted listener work beside it), and the listener and
+  ai& client were built at `34dcb31` (same source as the pin for them). Copying them would put
+  an unrecorded build in the image; building at a pin records exactly what is in it.
+  `straylight-wifi` came out bit-identical to the tablet's copy from a different checkout path,
+  and the derived models match the streams' sums exactly. `straylight-voicectl` has the same
+  size and strings as the tablet's but differs in code bytes (the tablet's was an incremental
+  build in that dirty tree), so a from-scratch rebuild on another machine may need a re-pin.
+- **Checked.** Every staged file (binaries, models, units, configs) is compared with
+  `scripts/straylight/SHA256SUMS`; any difference stops the build. Changing a pin means
+  `build-straylight.sh --repin DL STAGE`, reviewing `DL/SHA256SUMS.new`, and copying it over.
+  `/usr/local/share/straylight/BUILDINFO` records the commits, toolchain and sums.
+- **Cache.** `downloads/straylight/` keeps the clones, venv, sysroots and cargo trees (about
+  3.3 GB), so a second image build only re-stages. `SEED_STRAYLIGHT`, `SEED_VIEW_HAL`,
+  `SEED_SLINT` and `SEED_TRANSCRIBE` let the first clone copy objects from a local checkout
+  instead of GitHub.
+
+### Models
+
+None of them is in any repository. They are read from the streams' directories on the laptop
+(fetched there over HTTPS if missing, where a source exists) and checked against
+`scripts/straylight/inputs.sha256` before use; the products are checked against `SHA256SUMS`.
+
+| In the image (`/usr/local/share/straylight-listen/`) | Size | SHA-256 | From |
+| --- | --- | --- | --- |
+| `Qwen3-ASR-0.6B-Q4_K_M-convq8.gguf` | 577,378,048 | `7441f767…cefb443a` | `streams/asr/downloads/models/qwen3-asr-0.6b/Qwen3-ASR-0.6B-Q4_K_M.gguf` (`5b58f32a…3c0`, `handy-computer/Qwen3-ASR-0.6B-gguf`), rewritten by straylight-voice `listen/scripts/requant-conv.py` (conv stem as Q8_0) |
+| `silero-vad-v6.2-F32.gguf` | 1,241,056 | `0d871a80…eb1c88e6` | `streams/asr/downloads/models/silero-vad-v6.2/` (`handy-computer/silero-vad-v6.2-gguf`) |
+| `frontend.slt` | 1,348,308 | `15192f15…6e95f614` | openWakeWord v0.5.1 `melspectrogram.onnx` + `embedding_model.onnx` (`streams/wakeword/downloads/models/`), by `listen/scripts/export-frontend.py` |
+| `hey-straylight.slt` | 411,610 | `95b0c827…b6e8507` | `streams/wakeword/work/models/v5-final/` (trained there, run v5; cannot be downloaded) |
+
+### Speech output (hook)
+
+Kokoro TTS is being added to `straylight-listen`. Its files go in through
+`scripts/straylight/extra-files.tsv`: one line per file with SHA-256, source, destination and
+mode (the listener's work in progress looks for
+`/usr/local/share/straylight-listen/kokoro-v1.0.onnx` and `voices/<voice>.bin`). Then bump
+`STRAYLIGHT_COMMIT` to the commit that uses them and re-pin. With no lines, nothing extra is
+installed.
+
+### In the root filesystem
+
+- **Packages:** `libinput` (pulls `mtdev`, `libwacom`, `libgudev`, `lua54`), `noto-fonts`,
+  `noto-fonts-cjk`.
+- **Files**, from the pinned commit's `packaging/` directories: `/usr/local/bin/straylight-*`;
+  the four units in `/etc/systemd/system/`; `/etc/straylight-{voice,listen,aiand}.conf`;
+  `/etc/udev/rules.d/91-straylight-voice.rules` (keeps udev from queueing `tsv-idle-screen`, whose
+  start job would hold the screen back until the splash timeout);
+  `/usr/lib/sysusers.d/straylight-wifi.conf`; `/etc/polkit-1/rules.d/50-straylight-wifi.rules`;
+  `/etc/dbus-1/system.d/straylight-wifi-wpas.conf`. They are installed file by file, so
+  polkit's `rules.d` keeps `root:polkitd 0750`.
+- **Users:** `systemd-sysusers` runs in the chroot: user `straylight-wifi`, group `straylight`
+  (the screen gives its socket to that group) with `straylight-wifi` in it.
+- **Enabled:** `straylight-voice` (which creates the `display-manager.service` alias),
+  `straylight-listen`, `straylight-aiand`, `straylight-wifi`. The idle screen (`tsv-idle-screen`,
+  its script, daemon and udev rule) stays installed as the fallback; with the alias and the 91
+  rule it never starts.
+- **Checks in the build:** `systemd-analyze verify` on the four units, `udevadm verify` on the
+  rule, the alias symlink and `graphical.target` as default, `ld-linux --list` under qemu with no
+  missing library for all five binaries and with `libinput.so.10`, `libxkbcommon.so.0`,
+  `libudev.so.1` (screen) and `libasound.so.2` (listener) resolved, and the sysusers result.
+
+### Never in the image
+
+Secrets and per-device state are made on the device, not shipped:
+
+- no ai& account: `/var/lib/straylight-aiand/` (credentials, model list, settings) does not
+  exist until the first sign-in;
+- no Wi-Fi profile: `/etc/NetworkManager/system-connections/` is empty; `inject-wifi.sh` stays
+  the only (optional) way to pre-seed one;
+- no sound settings and no recordings: `/var/lib/straylight-listen/` does not exist, and the
+  shipped `/etc/straylight-listen.conf` (`--stats 600 --asr-gain 12`) does not pass `--record`.
+
+`build-rootfs.sh` deletes those paths before packing. The built image was checked with
+`debugfs` (see [Compared with the tablet](#compared-with-the-tablet)).
+
+### Compared with the tablet
+
+Built image (`out/thinksmart-alarm-system.img`, SHA-256 `11940cd1…7d1c`) against the running
+tablet on 2026-10-31, read-only over adb, files read out of the image with `debugfs rdump`:
+
+- **Same:** the models and `straylight-wifi` (byte for byte); all four units, the voice and ai&
+  configs, the udev, polkit and D-Bus files, the sysusers file; the enabled Straylight units and
+  the `display-manager.service` alias; `tsv-usb-gadget`, `tsv-adbd.service`, `tsv-growroot`,
+  `tsv-wifi-regdom`, `tsv-idle-rotate` and the rest of the overlay.
+- **Different, on purpose:**
+  - `straylight-voice`, `-voicectl`, `-listen`, `-aiand`: rebuilt at the pin (see above); the
+    tablet's differ by the embedded commit (`3e3b9d0-dirty`, `34dcb31`).
+  - `/etc/straylight-listen.conf`: the tablet passes `--record /var/lib/straylight-listen`
+    (kept from the wake-word tests); the image does not record.
+  - The sysusers file is in `/usr/lib/sysusers.d/` (vendor location) instead of
+    `/etc/sysusers.d/`; uid/gid 965/966 instead of 964/965 (nothing on disk is owned by them).
+  - The three `10-tsv-oom.conf` drop-ins are new; the tablet does not have them yet.
+  - `tsv-idle-screen`, its unit, `mkinitcpio.conf` and `zz-tsv-hooks.conf`: comments only (the
+    tablet predates the Omarchy clean-up).
+- **Different, from the tablet's history:** its root filesystem was not made by this build (its
+  pacman log starts on 2026-10-19 with offline `pacman -U`). So it has 36 more packages (the
+  `pipewire-audio` stack with codecs and `bluez-libs`, and the debugging tools `evtest`,
+  `i2c-tools`, `libgpiod`, `strace`, `libunwind`), none used by the voice assistant; it has
+  `systemd-networkd` enabled and stock systemd preset links (`systemd-homed`, the
+  `systemd-report*` sockets, `systemd-pstore`, `systemd-coredumpd`, `systemd-sysext`, ...)
+  that this build never enables; and `tsv-usb-gadget.prev`, a backup from the USB fix. The image
+  has newer `gnupg` and `libjpeg-turbo` (mirror of the build day).
+- **Not in the image (checked):** `/var/lib/straylight-aiand`, `/var/lib/straylight-listen`,
+  any `.nmconnection`, WAV recording, SSH host key or private key; `machine-id` is
+  `uninitialized`. The tablet's Wi-Fi PSK and ai& access and refresh tokens and key name were
+  searched for in every file of the image and in the raw image: no match (the values were
+  compared on the laptop, never printed or stored).
+
 ## Rebuilding
 
 ```sh
@@ -642,7 +788,9 @@ What `build-image.sh` does:
    `downloads/` and verifies them. It skips the download when the files are present and
    verify.
 2. `fetch-adbd.sh` and `build-adbd.sh` fetch, verify and cross-build adbd into `work/adbd`
-   (see [adb](#adb)).
+   (see [adb](#adb)). Then `build-straylight.sh` builds the voice assistant at its pinned
+   commit and stages it, with its models, in `work/straylight` (see
+   [Voice assistant](#voice-assistant)).
 3. `extract-firmware.sh` checks the backup images and extracts the firmware into
    `work/firmware`, using `fatextract.py` and `ath10k-fwpack.py`.
 4. Inside `unshare --user --map-root-user --map-auto --mount --pid --fork`:
@@ -658,7 +806,10 @@ What `build-image.sh` does:
 Host requirements: `unshare`/`newuidmap` with a `/etc/subuid` range, qemu-aarch64 binfmt with
 the `F` flag and `qemu-aarch64-static`, `bsdtar`, e2fsprogs, util-linux, `zstd`, `xz`, `gpg`/`gpgv`,
 `curl`, `python3`, `openssl`, `patch`, `make`, binutils `ar`, `patchelf`, and clang/LLVM/lld (the
-kernel's `modules_install` and the adbd cross build). No sudo is needed. Nothing is mounted on the host.
+kernel's `modules_install` and the adbd cross build); for the voice assistant also `git` with
+SSH access to GitHub, `cargo` with rustup's `aarch64-unknown-linux-gnu` target, `cmake` and
+`ninja`. No sudo is needed. Nothing is mounted on the host. All temporary files go to
+`work/tmp` (`TSV_TMPDIR`), not `/tmp`.
 
 Environment: `TSV_JETHAC_PASSWORD` (see Users), `PUBKEY` (SSH key, default
 `~/.ssh/id_ed25519_stadia_testbed.pub`), `ADB_PUBKEY` (default `~/.android/adbkey.pub`),
@@ -667,7 +818,7 @@ Environment: `TSV_JETHAC_PASSWORD` (see Users), `PUBKEY` (SSH key, default
 
 Writing the image is part of the flashing checklist, not this milestone. It would be
 `edl w system out/thinksmart-alarm-system.img`, after lk2nd from msm8916-mainline is in
-`boot`. With the stock GPT, the 1.5 GiB image fits the existing `system` partition.
+`boot`. The 3 GiB image needs the stage-B GPT; it does not fit the stock `system` partition.
 
 ## Not done, or not verified
 
@@ -694,7 +845,7 @@ Nothing below has been checked on hardware.
   WirePlumber rule, the TAS5782M tuning built from Lenovo's GPL source at image build time);
   microphone UCM, sensors daemons and echo cancellation are not.
 - **Hardcoded paths.** The initramfs preset and extlinux entry name the kernel version
-  `7.3.0-g755ffc44d5d8`. Installing a new kernel means updating `/boot` (Image.gz, DTB),
+  `7.3.0-g755ffc44d5d8-dirty`. Installing a new kernel means updating `/boot` (Image.gz, DTB),
   `/etc/mkinitcpio.d/tsv.preset`, and running `mkinitcpio -P`.
 - **adb on hardware:**
   - The adb function, enumeration with NCM + ACM + adb on the DWC3, and the

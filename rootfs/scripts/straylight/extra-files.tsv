@@ -1,0 +1,14 @@
+# Extra files for the image's Straylight tree, each checked by SHA-256.
+# This is the hook for speech output (Kokoro TTS in straylight-listen): when that
+# lands, add its model, voices and runtime library here, bump STRAYLIGHT_COMMIT in
+# pins.sh to the commit that uses them, and re-pin SHA256SUMS. No line = nothing extra.
+#
+# Columns, tab separated:
+#   sha256   source (relative to the lenovo-8 tree, or absolute)   destination in the image   mode
+#
+# The listener (straylight-voice listen/src/tts/mod.rs, in progress) looks for:
+#   /usr/local/share/straylight-listen/kokoro-v1.0.onnx
+#   /usr/local/share/straylight-listen/voices/<voice>.bin
+# e.g.
+# <sha256>	streams/tts/downloads/kokoro/kokoro-v1.0.onnx	usr/local/share/straylight-listen/kokoro-v1.0.onnx	0644
+# <sha256>	streams/tts/downloads/kokoro/voices/af_heart.bin	usr/local/share/straylight-listen/voices/af_heart.bin	0644

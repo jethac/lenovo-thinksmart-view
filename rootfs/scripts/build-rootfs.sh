@@ -5,16 +5,17 @@
 # real root: aarch64 binaries run through the host's qemu-aarch64 binfmt (F).
 #
 #   build-rootfs.sh TARBALL ROOTFS_DIR BOOTFS_DIR FIRMWARE_DIR KSRC KBUILD PUBKEY \
-#                   [ADBD_STAGE ADB_PUBKEY]
+#                   [ADBD_STAGE ADB_PUBKEY [STRAYLIGHT_STAGE]]
 #
 # ADBD_STAGE is build-adbd.sh's stage/ tree (/opt/adbd); ADB_PUBKEY is the
 # adb public key (adbkey.pub) installed as /etc/adbd/adb_keys.
+# STRAYLIGHT_STAGE is build-straylight.sh's tree (the voice assistant).
 #
 # Environment: TSV_JETHAC_HASH (optional) - a crypt(3) hash for jethac.
 set -euo pipefail
 
 TARBALL=$1 R=$2 BOOT=$3 FW=$4 KSRC=$5 KBUILD=$6 PUBKEY=$7
-ADBD_STAGE=${8:-} ADB_PUBKEY=${9:-}
+ADBD_STAGE=${8:-} ADB_PUBKEY=${9:-} STRAYLIGHT_STAGE=${10:-}
 HERE=$(cd "$(dirname "$0")" && pwd)
 OVERLAY=$HERE/overlay
 KVER=$(cat "$KBUILD/include/config/kernel.release")
@@ -66,6 +67,10 @@ in_root "$PAC -Syu --needed mkinitcpio networkmanager dnsmasq sudo wireless-regd
 # PipeWire with WirePlumber and the ALSA UCM profiles the overlay adds to, plus the
 # ALSA and V4L2 command-line tools used to check them.
 in_root "$PAC -S --needed pipewire wireplumber alsa-ucm-conf alsa-utils v4l-utils"
+# The Straylight voice assistant: libinput (touch, for Slint's linuxkms backend;
+# pulls in mtdev, libwacom, libgudev, lua54) and the Noto fonts (Latin, and CJK
+# for recognised and spoken Japanese and Chinese). See README "Voice assistant".
+in_root "$PAC -S --needed libinput noto-fonts noto-fonts-cjk"
 in_root "$PAC -Scc >/dev/null; rm -rf /var/cache/pacman/pkg/*"
 
 sed -i 's/^#CheckSpace-tsvbuild/CheckSpace/' "$R/etc/pacman.conf"
@@ -136,9 +141,36 @@ else
     echo "build-rootfs: no adbd stage given; image has no adbd"
 fi
 
+# The Straylight voice assistant (README "Voice assistant"): binaries, models,
+# units, configs, udev rule, polkit rule, D-Bus policy, sysusers file. File by
+# file with install(1), so directories that packages own (polkit's rules.d is
+# root:polkitd 0750) keep their owner and mode.
+VOICE_UNITS=""
+if [[ -n $STRAYLIGHT_STAGE ]]; then
+    (cd "$STRAYLIGHT_STAGE" && find . -type f -printf '%P\t%m\n') | while IFS=$'\t' read -r f m; do
+        install -D -o 0 -g 0 -m "$m" "$STRAYLIGHT_STAGE/$f" "$R/$f"
+    done
+    # User straylight-wifi and group straylight (the screen's socket group).
+    in_root "systemd-sysusers /usr/lib/sysusers.d/straylight-wifi.conf"
+    in_root "id straylight-wifi && getent group straylight | grep -q straylight-wifi"
+    for b in straylight-voice straylight-voicectl straylight-listen straylight-aiand straylight-wifi; do
+        in_root "! /usr/lib/ld-linux-aarch64.so.1 --list /usr/local/bin/$b | grep -F 'not found'"
+    done
+    for l in libinput.so.10 libxkbcommon.so.0 libudev.so.1; do
+        in_root "/usr/lib/ld-linux-aarch64.so.1 --list /usr/local/bin/straylight-voice | grep -q '$l => /'"
+    done
+    in_root "/usr/lib/ld-linux-aarch64.so.1 --list /usr/local/bin/straylight-listen | grep -q 'libasound.so.2 => /'"
+    in_root "udevadm verify /etc/udev/rules.d/91-straylight-voice.rules"
+    VOICE_UNITS="straylight-voice straylight-listen straylight-aiand straylight-wifi"
+else
+    echo "build-rootfs: no Straylight stage given; image has no voice assistant"
+fi
+
 # Services.
-# tsv-idle-screen has no [Install]: udev starts it when fb0 appears.
-in_root "systemctl enable sshd NetworkManager systemd-timesyncd tsv-usb-gadget tsv-usb-dhcp tsv-growroot tsv-pacman-keyring $ADB_UNITS"
+# tsv-idle-screen has no [Install]: udev starts it when fb0 appears. With the
+# voice assistant enabled (display-manager.service alias) and its 91 udev rule,
+# it is not started at all; it stays installed as the fallback.
+in_root "systemctl enable sshd NetworkManager systemd-timesyncd tsv-usb-gadget tsv-usb-dhcp tsv-growroot tsv-pacman-keyring $ADB_UNITS $VOICE_UNITS"
 in_root "systemctl disable systemd-networkd systemd-networkd.socket >/dev/null 2>&1 || true"
 in_root "systemctl mask NetworkManager-wait-online.service systemd-networkd-wait-online.service"
 
@@ -154,6 +186,13 @@ for f in usr/bin/plymouthd usr/lib/plymouth/script.so usr/lib/plymouth/renderers
     grep -qx "$f" "$R/tmp/initramfs.list" || { echo "initramfs lacks $f" >&2; exit 1; }
 done
 in_root "systemd-analyze verify --man=no tsv-idle-screen.service"
+if [[ -n $VOICE_UNITS ]]; then
+    in_root "systemd-analyze verify --man=no straylight-voice.service straylight-listen.service straylight-aiand.service straylight-wifi.service"
+    [[ $(readlink "$R/etc/systemd/system/display-manager.service") == /etc/systemd/system/straylight-voice.service ]] ||
+        { echo "build-rootfs: display-manager.service alias missing" >&2; exit 1; }
+    [[ $(chroot "$R" systemctl get-default) == graphical.target ]] ||
+        { echo "build-rootfs: default target is not graphical.target" >&2; exit 1; }
+fi
 # tsv-idle-rotate links against the image's libraries and renders (through qemu).
 in_root "! /usr/lib/ld-linux-aarch64.so.1 --list /usr/local/libexec/tsv-idle-rotate | grep -F 'not found'"
 in_root "/usr/local/libexec/tsv-idle-rotate --render 30 /tmp/idle-rotate.raw && [ \$(stat -c %s /tmp/idle-rotate.raw) = 4096000 ]; rm -f /tmp/idle-rotate.raw"
@@ -181,6 +220,9 @@ rm -rf "$R/etc/pacman.d/gnupg"
 printf 'uninitialized\n' > "$R/etc/machine-id"
 rm -f "$R/var/lib/systemd/random-seed"
 rm -rf "$R"/var/log/journal/* "$R"/var/log/pacman.log "$R"/root/.bash_history
+# The voice assistant's state (ai& account, sound settings, recordings) is made
+# on the device; none of it is shipped.
+rm -rf "$R/var/lib/straylight-aiand" "$R/var/lib/straylight-listen" "$R/var/lib/private/straylight-"*
 rm -f "$R/etc/resolv.conf"
 if [[ -e $R/etc/resolv.conf.tsv-orig || -L $R/etc/resolv.conf.tsv-orig ]]; then
     mv "$R/etc/resolv.conf.tsv-orig" "$R/etc/resolv.conf"
