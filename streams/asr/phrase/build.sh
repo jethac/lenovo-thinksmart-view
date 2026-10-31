@@ -4,8 +4,10 @@
 #   build.sh [a53|native]
 #
 # The snapshot is the pinned commit of downloads/transcribe.cpp exported with
-# `git archive` into work/phrase-src/ plus patches/0001 (quantised conv stem),
-# so work in progress in that checkout never leaks into this build.
+# `git archive` into work/phrase-src/ plus patches/*.patch, so work in progress
+# in that checkout never leaks into this build. Also builds sla-file, which
+# compiles straylight-listen's recogniser from a straylight-voice checkout
+# (STRAYLIGHT_VOICE, default ../straylight-voice next to this project).
 # a53: static cross-build for the ThinkSmart View (needs work/sysroot from
 # scripts/make-sysroot.sh), into work/build-phrase-a53. native: laptop build
 # for transcript checks, into work/build-phrase-native.
@@ -13,6 +15,9 @@ set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 S=$(cd "$HERE/.." && pwd)
 TARGET=${1:-a53}
+SV=${STRAYLIGHT_VOICE:-$(cd "$S/../../.." && pwd)/straylight-voice}
+SLA=()
+[[ -f $SV/listen/asr/straylight_asr.cpp ]] && SLA=(-DSTRAYLIGHT_ASR_DIR="$(cd "$SV/listen/asr" && pwd)")
 COMMIT=5700f127e38dd53c4735ea23ef743b4b538eacd4
 SRC=$S/work/phrase-src/transcribe.cpp
 STAMP=$S/work/phrase-src/STAMP
@@ -32,14 +37,14 @@ a53)
         -DCMAKE_TOOLCHAIN_FILE="$S/scripts/aarch64-static.cmake" -DTSV_SYSROOT="$S/work/sysroot" \
         -DCMAKE_BUILD_TYPE=Release \
         -DGGML_NATIVE=OFF -DGGML_CPU_ARM_ARCH=armv8-a -DGGML_OPENMP=OFF \
-        -DTRANSCRIBE_USE_SYSTEM_BLAS=OFF
-    ninja -C "$B" phrase-stream
-    llvm-strip "$B/bin/phrase-stream" ;;
+        -DTRANSCRIBE_USE_SYSTEM_BLAS=OFF "${SLA[@]}"
+    ninja -C "$B" phrase-stream ${SLA:+sla-file}
+    llvm-strip "$B"/bin/* ;;
 native)
     B=$S/work/build-phrase-native
     cmake -S "$HERE" -B "$B" -G Ninja -DTRANSCRIBE_SRC="$SRC" -DCMAKE_BUILD_TYPE=Release \
-        -DGGML_NATIVE=ON -DGGML_OPENMP=OFF -DTRANSCRIBE_USE_SYSTEM_BLAS=OFF
-    ninja -C "$B" phrase-stream ;;
+        -DGGML_NATIVE=ON -DGGML_OPENMP=OFF -DTRANSCRIBE_USE_SYSTEM_BLAS=OFF "${SLA[@]}"
+    ninja -C "$B" phrase-stream ${SLA:+sla-file} ;;
 *) echo "usage: $0 [a53|native]" >&2; exit 2 ;;
 esac
-ls -la "$B/bin/phrase-stream"
+ls -la "$B"/bin/

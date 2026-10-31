@@ -1,0 +1,913 @@
+diff --git a/src/arch/qwen3_asr/decoder.cpp b/src/arch/qwen3_asr/decoder.cpp
+index 70de99b4..d180191f 100644
+--- a/src/arch/qwen3_asr/decoder.cpp
++++ b/src/arch/qwen3_asr/decoder.cpp
+@@ -16,6 +16,7 @@
+ #include "transcribe-debug.h"
+ #include "transcribe-log.h"
+ 
++#include <algorithm>
+ #include <cmath>
+ #include <cstdio>
+ 
+@@ -240,6 +241,111 @@ PrefillBuild build_prefill_graph(ggml_context *                   ctx,
+     return pb;
+ }
+ 
++// Prefill after a cached prefix (see decoder.h).
++
++PrefillChunkBuild build_prefill_chunk_graph(ggml_context *                   ctx,
++                                            const QwenAsrWeights &           weights,
++                                            const QwenAsrHParams &           hp,
++                                            transcribe::causal_lm::KvCache & kv_cache,
++                                            int                              T_chunk,
++                                            int                              max_n_kv,
++                                            int                              pre_n,
++                                            int                              aud_n,
++                                            int                              suf_n,
++                                            int                              n_logits,
++                                            bool                             use_flash,
++                                            int                              fa_q_rows) {
++    PrefillChunkBuild pb{};
++    if (ctx == nullptr || T_chunk <= 0 || pre_n < 0 || aud_n < 0 || suf_n < 0 || pre_n + aud_n + suf_n != T_chunk ||
++        max_n_kv < T_chunk || n_logits < 0 || n_logits > T_chunk) {
++        log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
++                "qwen3_asr decoder: bad chunk geometry (T_chunk=%d max_n_kv=%d pre=%d aud=%d suf=%d logits=%d)",
++                T_chunk, max_n_kv, pre_n, aud_n, suf_n, n_logits);
++        return pb;
++    }
++    if (kv_cache.self_k == nullptr || kv_cache.self_v == nullptr || max_n_kv > kv_cache.n_ctx) {
++        log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "qwen3_asr decoder: kv_cache missing or too small (max_n_kv=%d)",
++                max_n_kv);
++        return pb;
++    }
++
++    const int64_t hidden  = hp.dec_hidden;
++    const int64_t vocab   = hp.dec_vocab_size;
++    const int     n_layer = hp.dec_n_layers;
++    const auto    bp      = to_block_params(hp);
++
++    // A chunk made only of audio rows needs no token embeddings; leave the
++    // input out rather than creating one the graph never reaches.
++    if (pre_n + suf_n > 0) {
++        pb.input_ids_in = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, T_chunk);
++        named(pb.input_ids_in, "dec.chunk.input_ids");
++        ggml_set_input(pb.input_ids_in);
++    }
++    if (aud_n > 0) {
++        pb.enc_out_in = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, hp.enc_output_dim, aud_n);
++        named(pb.enc_out_in, "dec.chunk.enc_out");
++        ggml_set_input(pb.enc_out_in);
++    }
++    pb.positions_in = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, T_chunk);
++    named(pb.positions_in, "dec.chunk.positions");
++    ggml_set_input(pb.positions_in);
++
++    pb.kv_idx_in = ggml_new_tensor_1d(ctx, GGML_TYPE_I64, T_chunk);
++    named(pb.kv_idx_in, "dec.chunk.kv_idx");
++    ggml_set_input(pb.kv_idx_in);
++
++    pb.mask_rows = (fa_q_rows < 0) ? std::max(T_chunk, -fa_q_rows) : T_chunk;
++    pb.mask_in   = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, max_n_kv, pb.mask_rows);
++    named(pb.mask_in, "dec.chunk.attn_mask");
++    ggml_set_input(pb.mask_in);
++
++    ggml_cgraph * gf = ggml_new_graph_custom(ctx, /*size=*/16384, /*grads=*/false);
++    if (gf == nullptr) {
++        log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "qwen3_asr decoder: ggml_new_graph_custom failed");
++        return pb;
++    }
++    pb.graph = gf;
++
++    // The single-shot builder's three-way splice, restricted to this chunk.
++    ggml_tensor * token_emb =
++        (pb.input_ids_in != nullptr) ? ggml_get_rows(ctx, weights.dec_embed.token_w, pb.input_ids_in) : nullptr;
++    const size_t emb_elem = (token_emb != nullptr) ? ggml_element_size(token_emb) : 0;
++
++    ggml_tensor * x = nullptr;
++    if (pre_n > 0) {
++        x = ggml_cont(ctx, ggml_view_2d(ctx, token_emb, hidden, pre_n, emb_elem * hidden, /*off=*/0));
++    }
++    if (aud_n > 0) {
++        x = (x == nullptr) ? pb.enc_out_in : ggml_concat(ctx, x, pb.enc_out_in, /*dim=*/1);
++    }
++    if (suf_n > 0) {
++        ggml_tensor * x_suffix = ggml_cont(ctx, ggml_view_2d(ctx, token_emb, hidden, suf_n, emb_elem * hidden,
++                                                             emb_elem * hidden * static_cast<size_t>(pre_n + aud_n)));
++        x                      = (x == nullptr) ? x_suffix : ggml_concat(ctx, x, x_suffix, /*dim=*/1);
++    }
++
++    for (int il = 0; il < n_layer; ++il) {
++        x = causal_lm::block_step_n(ctx, gf, x, to_block_view(weights.dec_blocks[il]), bp, kv_cache, il, T_chunk,
++                                    max_n_kv, pb.mask_in, pb.positions_in, pb.kv_idx_in, use_flash, fa_q_rows);
++    }
++
++    if (n_logits > 0) {
++        ggml_tensor * last_x = ggml_view_2d(ctx, x, hidden, n_logits, ggml_element_size(x) * hidden,
++                                            ggml_element_size(x) * hidden * static_cast<size_t>(T_chunk - n_logits));
++        last_x               = ggml_cont(ctx, last_x);
++        last_x               = ggml_mul(ctx, ggml_rms_norm(ctx, last_x, hp.dec_rms_norm_eps), weights.dec_final.norm_w);
++        ggml_tensor * logits = ggml_mul_mat(ctx, weights.dec_embed.token_w, last_x);
++        named(logits, "dec.chunk.logits");
++        pb.out = logits;
++        (void) vocab;
++        ggml_set_output(pb.out);
++        ggml_build_forward_expand(gf, pb.out);
++    } else {
++        ggml_build_forward_expand(gf, x);
++    }
++    return pb;
++}
++
+ // Step graph (single-token decode)
+ 
+ StepBuild build_step_graph(ggml_context *                   ctx,
+diff --git a/src/arch/qwen3_asr/decoder.h b/src/arch/qwen3_asr/decoder.h
+index f43ac58f..b468a182 100644
+--- a/src/arch/qwen3_asr/decoder.h
++++ b/src/arch/qwen3_asr/decoder.h
+@@ -86,6 +86,52 @@ PrefillBuild build_prefill_graph(ggml_context *                   ctx,
+                                  int                              kv_batch_slot = 0,
+                                  int                              kv_n_batch    = 1);
+ 
++// ---------- Prefill after a cached prefix ----------
++
++// ggml's CPU flash attention runs blocks of at least this many query rows
++// tiled and smaller ones row by row (GGML_FA_TILE_Q in ggml-cpu/common.h);
++// the two round differently. build_prefill_graph's single graph over
++// T_prompt rows is therefore tiled iff T_prompt >= k_fa_tile_rows, and a
++// prefill split across graphs reproduces it by choosing the same path for
++// every row (fa_q_rows below, causal_lm::block_step_n).
++constexpr int k_fa_tile_rows = 64;
++
++struct PrefillChunkBuild {
++    ggml_tensor * input_ids_in = nullptr;  // [T_chunk] i32 (null when the chunk is all audio)
++    ggml_tensor * enc_out_in   = nullptr;  // [enc_output_dim, aud_n] f32 (null when aud_n == 0)
++    ggml_tensor * positions_in = nullptr;  // [T_chunk] i32 for RoPE
++    ggml_tensor * kv_idx_in    = nullptr;  // [T_chunk] i64, KV write rows
++    ggml_tensor * mask_in      = nullptr;  // [max_n_kv, mask_rows] f16 (fill_prefill_chunk_mask)
++    ggml_tensor * out          = nullptr;  // [vocab, n_logits] logits of the last n_logits positions
++    ggml_cgraph * graph        = nullptr;
++    int           mask_rows    = 0;        // T_chunk, or the padded query rows (fa_q_rows < 0)
++};
++
++// Prefill T_chunk prompt positions [n_past, n_past + T_chunk) on top of KV
++// rows [0, n_past) that are already in the cache (a prompt prefix shared with
++// an earlier run). The chunk is laid out [pre_n tokens | aud_n audio rows |
++// suf_n tokens]; max_n_kv = n_past + T_chunk is the attention width. Outputs
++// the logits of the last n_logits positions, or none (n_logits = 0: the run
++// only fills the cache). Requires a single-slot cache. fa_q_rows as in
++// causal_lm::block_step_n: with tiled = (the whole prompt's single graph
++// would be tiled), pass -k_fa_tile_rows for a tiled prompt split below 64
++// rows, a block under 64 for a row-by-row one split at 64 rows or more, and
++// 0 otherwise; each row then matches the single-graph prefill bit for bit
++// (on backends whose matrix products do not depend on the row count, as
++// ggml's CPU kernels without weight repacking).
++PrefillChunkBuild build_prefill_chunk_graph(ggml_context *                   ctx,
++                                            const QwenAsrWeights &           weights,
++                                            const QwenAsrHParams &           hp,
++                                            transcribe::causal_lm::KvCache & kv_cache,
++                                            int                              T_chunk,
++                                            int                              max_n_kv,
++                                            int                              pre_n,
++                                            int                              aud_n,
++                                            int                              suf_n,
++                                            int                              n_logits,
++                                            bool                             use_flash,
++                                            int                              fa_q_rows);
++
+ // ---------- Step graph (one token) ----------
+ 
+ struct StepBuild {
+diff --git a/src/arch/qwen3_asr/model.cpp b/src/arch/qwen3_asr/model.cpp
+index 28e27167..187a1c8d 100644
+--- a/src/arch/qwen3_asr/model.cpp
++++ b/src/arch/qwen3_asr/model.cpp
+@@ -452,6 +452,53 @@ transcribe_status encode_system_context(const transcribe::Tokenizer & tok,
+     return TRANSCRIBE_OK;
+ }
+ 
++// The prompt-prefix cache is on unless TRANSCRIBE_QWEN3_NO_PREFIX_CACHE is
++// set (for A/B runs); its results are bit-identical to the uncached path on
++// the CPU backend. The header draft is opt-in (TRANSCRIBE_QWEN3_HEADER_DRAFT):
++// its verification compares logits from the prefill graph with what the
++// step graph would have produced, which round differently, so it can change
++// a near-tie token.
++bool prefix_cache_enabled() {
++    return !transcribe::env::flag("TRANSCRIBE_QWEN3_NO_PREFIX_CACHE");
++}
++bool header_draft_enabled() {
++    return prefix_cache_enabled() && transcribe::env::flag("TRANSCRIBE_QWEN3_HEADER_DRAFT");
++}
++
++// Rows of the prompt-prefix cache usable for a prompt starting with the n ids
++// at b whose single-graph prefill takes the `tiled` attention path: the
++// common prefix of the ids, among rows computed on that same path.
++int common_prefix(const QwenAsrSession * cc, const int32_t * b, int n, bool tiled) {
++    const int m = std::min(static_cast<int>(cc->kv_ids.size()), n);
++    int       i = 0;
++    while (i < m && cc->kv_ids[i] == b[i] && (cc->kv_tiled[i] != 0) == tiled) {
++        ++i;
++    }
++    return i;
++}
++
++void clear_prefix_cache(QwenAsrSession * cc) {
++    cc->kv_ids.clear();
++    cc->kv_tiled.clear();
++}
++
++// fa_q_rows for a chunk of T_chunk query rows that must take the `tiled`
++// path (see build_prefill_chunk_graph).
++int chunk_fa_q_rows(int T_chunk, bool tiled) {
++    if (tiled) {
++        return T_chunk >= k_fa_tile_rows ? 0 : -k_fa_tile_rows;
++    }
++    return T_chunk >= k_fa_tile_rows ? k_fa_tile_rows / 2 : 0;
++}
++
++// Upload a chunk mask: fill_prefill_chunk_mask for the T_chunk real query
++// rows, all-visible rows for the padding (their outputs are dropped).
++void set_chunk_mask(const PrefillChunkBuild & pb, int max_n_kv, int T_chunk, int n_past) {
++    std::vector<ggml_fp16_t> mask(static_cast<size_t>(max_n_kv) * pb.mask_rows, ggml_fp32_to_fp16(0.0f));
++    transcribe::causal_lm::fill_prefill_chunk_mask(mask.data(), max_n_kv, T_chunk, n_past);
++    ggml_backend_tensor_set(pb.mask_in, mask.data(), 0, mask.size() * sizeof(ggml_fp16_t));
++}
++
+ }  // namespace
+ 
+ // below; encode_language_prefix matches the qwen3_asr.h declaration.)
+@@ -668,6 +715,18 @@ transcribe_status run_impl(transcribe_session *          session,
+         }
+         lang_prefix_ptr = &lang_prefix_ids;
+     }
++    // Experiment (TRANSCRIBE_QWEN3_FORCE_LAST_HEADER, off by default): with
++    // no hint but a context prompt (a later phrase of an utterance), force
++    // the header the last auto-detect run generated instead of detecting.
++    // Unlike the header draft, nothing checks it against the audio.
++    bool forced_last = false;
++    if (lang_prefix_ptr == nullptr && params != nullptr && params->prompt != nullptr && params->prompt[0] != '\0' &&
++        !cc->header_draft.empty() && prefix_cache_enabled() &&
++        transcribe::env::flag("TRANSCRIBE_QWEN3_FORCE_LAST_HEADER")) {
++        lang_prefix_ids = cc->header_draft;
++        lang_prefix_ptr = &lang_prefix_ids;
++        forced_last     = true;
++    }
+ 
+     transcribe::debug::init();
+ 
+@@ -891,10 +950,16 @@ transcribe_status run_impl(transcribe_session *          session,
+     if (want_n_ctx > ceiling) {
+         want_n_ctx = ceiling;
+     }
++    // Prompt-prefix cache: rows [0, n_past) of the KV cache already hold this
++    // prompt's first n_past tokens from an earlier run (the chat frame and
++    // the system context, both before the audio), so only the rest is
++    // prefilled. The audio and everything after it are always new.
++    const bool reuse = prefix_cache_enabled();
+     if (cc->kv_cache.ctx != nullptr && cc->kv_cache.n_ctx < want_n_ctx) {
+         cc->kv_cache.free();
+     }
+     if (cc->kv_cache.ctx == nullptr) {
++        clear_prefix_cache(cc);
+         ggml_type kv_type = GGML_TYPE_F16;
+         if (cc->kv_type == TRANSCRIBE_KV_TYPE_F32) {
+             kv_type = GGML_TYPE_F32;
+@@ -909,97 +974,43 @@ transcribe_status run_impl(transcribe_session *          session,
+                                 cm->hparams.dec_n_layers);
+             return TRANSCRIBE_ERR_OOM;
+         }
+-    } else {
++    } else if (!reuse) {
+         // Clear stale positions for a fresh prefill.
++        clear_prefix_cache(cc);
+         if (cc->kv_cache.buffer != nullptr) {
+             ggml_backend_buffer_clear(cc->kv_cache.buffer, 0);
+         }
+         cc->kv_cache.n    = 0;
+         cc->kv_cache.head = 0;
+     }
+-
+-    // Prefill graph. slice_last false: last block's FFN + final norm run on
+-    // every position (needed for dump parity). true: slice to just the final
+-    // position before the last FFN (llama.cpp's inp_out_ids trick, ~25 ms).
+-    const bool   dumps_on   = transcribe::debug::enabled();
+-    const bool   slice_last = !dumps_on;
+-    PrefillBuild pb = build_prefill_graph(cc->compute_ctx, cm->weights, cm->hparams, cc->kv_cache, T_prompt, T_enc,
+-                                          prefix_len, suffix_len,
+-                                          /*use_flash=*/cc->decoder_use_flash, slice_last);
+-    if (pb.graph == nullptr || pb.out == nullptr) {
+-        return TRANSCRIBE_ERR_GGUF;
++    // Stale rows past n_past need no clearing: every attention mask here
++    // excludes them (-inf), and the step loop writes each row before reading it.
++    // Every row is computed on the attention path the single prefill graph
++    // over this prompt would take, so the result does not depend on which
++    // rows came from the cache.
++    const bool ref_tiled = T_prompt >= k_fa_tile_rows;
++    const int  n_past    = reuse ? common_prefix(cc, prompt_ids.data(), prefix_len, ref_tiled) : 0;
++    // Header draft: the previous auto-detect run's "language X<asr_text>" ids,
++    // appended to the prompt; the prefill's logits at those positions show
++    // how many of them the model predicts itself (greedy), and those are
++    // taken as generated, saving a decode step each.
++    std::vector<int32_t> draft;
++    if (lang_prefix_ptr == nullptr && header_draft_enabled() &&
++        static_cast<int>(cc->header_draft.size()) + 1 < max_new &&
++        T_prompt + static_cast<int>(cc->header_draft.size()) <= cc->kv_cache.n_ctx) {
++        draft = cc->header_draft;
+     }
++    const int n_draft = static_cast<int>(draft.size());
++    cc->kv_reused    = n_past;
++    cc->kv_prefilled = T_prompt - n_past;
++    cc->draft_n      = n_draft;
++    cc->draft_ok     = 0;
+ 
+-    // Allocate + compute prefill on the same scheduler.
+-    ggml_backend_sched_reset(cc->sched);
+-    if (!TRANSCRIBE_ALLOC_SCHED_GRAPH(cc->sched, pb.graph, "qwen3_asr")) {
+-        transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
+-                            "qwen3_asr run: prefill graph allocation failed (T_prompt=%d) — "
+-                            "out of memory. Lower transcribe_session_params.n_ctx or shorten "
+-                            "the audio.",
+-                            T_prompt);
+-        return TRANSCRIBE_ERR_OOM;
+-    }
+-
+-    // Upload prefill inputs.
+-    ggml_backend_tensor_set(pb.input_ids_in, prompt_ids.data(), 0, prompt_ids.size() * sizeof(int32_t));
+-    ggml_backend_tensor_set(pb.enc_out_in, cc->enc_host.data(), 0, cc->enc_host.size() * sizeof(float));
+-
+-    {
+-        std::vector<int32_t> positions(T_prompt);
+-        for (int i = 0; i < T_prompt; ++i) {
+-            positions[i] = i;
+-        }
+-        ggml_backend_tensor_set(pb.positions_in, positions.data(), 0, positions.size() * sizeof(int32_t));
+-    }
+-
+-    {
+-        // Causal mask in F16 (matches pb.mask_in): row r col c is 0 if c <= r,
+-        // else -inf, row-major. F16 upload avoids a per-layer ggml_cast.
+-        const ggml_fp16_t        mask_zero    = ggml_fp32_to_fp16(0.0f);
+-        const ggml_fp16_t        mask_neg_inf = ggml_fp32_to_fp16(-INFINITY);
+-        std::vector<ggml_fp16_t> mask(static_cast<size_t>(T_prompt) * T_prompt, mask_neg_inf);
+-        for (int r = 0; r < T_prompt; ++r) {
+-            for (int c = 0; c <= r; ++c) {
+-                mask[static_cast<size_t>(r) * T_prompt + c] = mask_zero;
+-            }
+-        }
+-        ggml_backend_tensor_set(pb.mask_in, mask.data(), 0, mask.size() * sizeof(ggml_fp16_t));
+-    }
+-
+-    const int64_t t_prefill_compute_start = ggml_time_us();
+-    t_prefill_build_us                    = t_prefill_compute_start - t_prefill_build_start;
+-    if (const ggml_status gs = ggml_backend_sched_graph_compute(cc->sched, pb.graph); gs != GGML_STATUS_SUCCESS) {
+-        log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "qwen3_asr run: prefill graph compute failed (%d)", static_cast<int>(gs));
+-        return TRANSCRIBE_ERR_BACKEND;
+-    }
+-    t_prefill_compute_us = ggml_time_us() - t_prefill_compute_start;
+-
+-    cc->kv_cache.n    = T_prompt;
+-    cc->kv_cache.head = T_prompt;
+-
+-    // Dump dec.* intermediates.
+-    try_dump("dec.token_emb", pb.dumps.token_emb, "dec.token_emb");
+-    try_dump("dec.audio_injected", pb.dumps.audio_injected, "dec.audio_injected");
+-    try_dump("dec.block.0.out", pb.dumps.block_0_out, "dec.block.0");
+-    {
+-        char nm[64];
+-        std::snprintf(nm, sizeof(nm), "dec.block.%d.out", cm->hparams.dec_n_layers - 1);
+-        try_dump(nm, pb.dumps.block_last_out, "dec.block.last");
+-    }
+-    try_dump("dec.out_before_head", pb.dumps.out_before_head, "dec.out_before_head");
+-    try_dump("dec.logits_raw", pb.dumps.logits_raw, "dec.logits_raw");
+-
+-    // Read prefill logits + first argmax.
+-    const int64_t      t_prefill_logits_start = ggml_time_us();
+-    const int          vocab                  = cm->hparams.dec_vocab_size;
+-    std::vector<float> logits(vocab);
+-    ggml_backend_tensor_get(pb.out, logits.data(), 0, logits.size() * sizeof(float));
+-
+-    auto argmax = [&](const std::vector<float> & v) -> int32_t {
++    const int vocab  = cm->hparams.dec_vocab_size;
++    auto      argmax = [](const float * v, int n) -> int32_t {
+         int32_t best   = 0;
+         float   best_v = v[0];
+-        for (int32_t i = 1; i < static_cast<int32_t>(v.size()); ++i) {
++        for (int32_t i = 1; i < n; ++i) {
+             if (v[i] > best_v) {
+                 best_v = v[i];
+                 best   = i;
+@@ -1007,15 +1018,177 @@ transcribe_status run_impl(transcribe_session *          session,
+         }
+         return best;
+     };
+-
+     std::vector<int32_t> generated_ids;
+-    int32_t              next_tok = argmax(logits);
+-    generated_ids.push_back(next_tok);
+-    t_prefill_logits_us = ggml_time_us() - t_prefill_logits_start;
++    float                logit0_max = 0.0f;  // perf log: max logit after the prompt (bitwise checks)
++    int32_t              next_tok = 0;
++    int                  n_accepted = 0;  // header draft tokens taken as generated
++
++    if (n_past == 0 && n_draft == 0) {
++        // Prefill graph. slice_last false: last block's FFN + final norm run on
++        // every position (needed for dump parity). true: slice to just the final
++        // position before the last FFN (llama.cpp's inp_out_ids trick, ~25 ms).
++        const bool   dumps_on   = transcribe::debug::enabled();
++        const bool   slice_last = !dumps_on;
++        PrefillBuild pb = build_prefill_graph(cc->compute_ctx, cm->weights, cm->hparams, cc->kv_cache, T_prompt, T_enc,
++                                              prefix_len, suffix_len,
++                                              /*use_flash=*/cc->decoder_use_flash, slice_last);
++        if (pb.graph == nullptr || pb.out == nullptr) {
++            return TRANSCRIBE_ERR_GGUF;
++        }
++
++        // Allocate + compute prefill on the same scheduler.
++        ggml_backend_sched_reset(cc->sched);
++        if (!TRANSCRIBE_ALLOC_SCHED_GRAPH(cc->sched, pb.graph, "qwen3_asr")) {
++            transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
++                                "qwen3_asr run: prefill graph allocation failed (T_prompt=%d) — "
++                                "out of memory. Lower transcribe_session_params.n_ctx or shorten "
++                                "the audio.",
++                                T_prompt);
++            return TRANSCRIBE_ERR_OOM;
++        }
++
++        // Upload prefill inputs.
++        ggml_backend_tensor_set(pb.input_ids_in, prompt_ids.data(), 0, prompt_ids.size() * sizeof(int32_t));
++        ggml_backend_tensor_set(pb.enc_out_in, cc->enc_host.data(), 0, cc->enc_host.size() * sizeof(float));
++
++        {
++            std::vector<int32_t> positions(T_prompt);
++            for (int i = 0; i < T_prompt; ++i) {
++                positions[i] = i;
++            }
++            ggml_backend_tensor_set(pb.positions_in, positions.data(), 0, positions.size() * sizeof(int32_t));
++        }
++
++        {
++            // Causal mask in F16 (matches pb.mask_in): row r col c is 0 if c <= r,
++            // else -inf, row-major. F16 upload avoids a per-layer ggml_cast.
++            const ggml_fp16_t        mask_zero    = ggml_fp32_to_fp16(0.0f);
++            const ggml_fp16_t        mask_neg_inf = ggml_fp32_to_fp16(-INFINITY);
++            std::vector<ggml_fp16_t> mask(static_cast<size_t>(T_prompt) * T_prompt, mask_neg_inf);
++            for (int r = 0; r < T_prompt; ++r) {
++                for (int c = 0; c <= r; ++c) {
++                    mask[static_cast<size_t>(r) * T_prompt + c] = mask_zero;
++                }
++            }
++            ggml_backend_tensor_set(pb.mask_in, mask.data(), 0, mask.size() * sizeof(ggml_fp16_t));
++        }
++
++        const int64_t t_prefill_compute_start = ggml_time_us();
++        t_prefill_build_us                    = t_prefill_compute_start - t_prefill_build_start;
++        if (const ggml_status gs = ggml_backend_sched_graph_compute(cc->sched, pb.graph); gs != GGML_STATUS_SUCCESS) {
++            log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "qwen3_asr run: prefill graph compute failed (%d)", static_cast<int>(gs));
++            return TRANSCRIBE_ERR_BACKEND;
++        }
++        t_prefill_compute_us = ggml_time_us() - t_prefill_compute_start;
++
++        cc->kv_cache.n    = T_prompt;
++        cc->kv_cache.head = T_prompt;
++
++        // Dump dec.* intermediates.
++        try_dump("dec.token_emb", pb.dumps.token_emb, "dec.token_emb");
++        try_dump("dec.audio_injected", pb.dumps.audio_injected, "dec.audio_injected");
++        try_dump("dec.block.0.out", pb.dumps.block_0_out, "dec.block.0");
++        {
++            char nm[64];
++            std::snprintf(nm, sizeof(nm), "dec.block.%d.out", cm->hparams.dec_n_layers - 1);
++            try_dump(nm, pb.dumps.block_last_out, "dec.block.last");
++        }
++        try_dump("dec.out_before_head", pb.dumps.out_before_head, "dec.out_before_head");
++        try_dump("dec.logits_raw", pb.dumps.logits_raw, "dec.logits_raw");
++
++        // Read prefill logits + first argmax.
++        const int64_t      t_prefill_logits_start = ggml_time_us();
++        std::vector<float> logits(vocab);
++        ggml_backend_tensor_get(pb.out, logits.data(), 0, logits.size() * sizeof(float));
++
++
++        next_tok = argmax(logits.data(), vocab);
++        logit0_max = logits[next_tok];
++        generated_ids.push_back(next_tok);
++        t_prefill_logits_us = ggml_time_us() - t_prefill_logits_start;
++    } else {
++        // Prefill [n_past, T_prompt + n_draft) on top of the cached rows.
++        // (Debug dumps of decoder intermediates are on the path above only.)
++        const int T_full   = T_prompt + n_draft;
++        const int T_chunk  = T_full - n_past;
++        const int n_logits = 1 + n_draft;
++        cc->kv_ids.resize(static_cast<size_t>(n_past));  // rows past n_past are rewritten below
++        cc->kv_tiled.resize(static_cast<size_t>(n_past));
++
++        std::vector<int32_t> full_ids(prompt_ids);
++        full_ids.insert(full_ids.end(), draft.begin(), draft.end());
++
++        PrefillChunkBuild pb =
++            build_prefill_chunk_graph(cc->compute_ctx, cm->weights, cm->hparams, cc->kv_cache, T_chunk, T_full,
++                                      prefix_len - n_past, T_enc, suffix_len + n_draft, n_logits,
++                                      /*use_flash=*/cc->decoder_use_flash, chunk_fa_q_rows(T_chunk, ref_tiled));
++        if (pb.graph == nullptr || pb.out == nullptr) {
++            return TRANSCRIBE_ERR_GGUF;
++        }
++        ggml_backend_sched_reset(cc->sched);
++        if (!TRANSCRIBE_ALLOC_SCHED_GRAPH(cc->sched, pb.graph, "qwen3_asr")) {
++            transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
++                                "qwen3_asr run: prefill graph allocation failed (T_prompt=%d) — "
++                                "out of memory. Lower transcribe_session_params.n_ctx or shorten "
++                                "the audio.",
++                                T_prompt);
++            return TRANSCRIBE_ERR_OOM;
++        }
++        if (pb.input_ids_in != nullptr) {
++            ggml_backend_tensor_set(pb.input_ids_in, full_ids.data() + n_past, 0,
++                                    static_cast<size_t>(T_chunk) * sizeof(int32_t));
++        }
++        ggml_backend_tensor_set(pb.enc_out_in, cc->enc_host.data(), 0, cc->enc_host.size() * sizeof(float));
++        {
++            std::vector<int32_t> positions(T_chunk);
++            std::vector<int64_t> kv_idx(T_chunk);
++            for (int i = 0; i < T_chunk; ++i) {
++                positions[i] = n_past + i;
++                kv_idx[i]    = n_past + i;
++            }
++            ggml_backend_tensor_set(pb.positions_in, positions.data(), 0, positions.size() * sizeof(int32_t));
++            ggml_backend_tensor_set(pb.kv_idx_in, kv_idx.data(), 0, kv_idx.size() * sizeof(int64_t));
++        }
++        set_chunk_mask(pb, T_full, T_chunk, n_past);
++
++        const int64_t t_prefill_compute_start = ggml_time_us();
++        t_prefill_build_us                    = t_prefill_compute_start - t_prefill_build_start;
++        if (const ggml_status gs = ggml_backend_sched_graph_compute(cc->sched, pb.graph); gs != GGML_STATUS_SUCCESS) {
++            log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "qwen3_asr run: prefill graph compute failed (%d)",
++                    static_cast<int>(gs));
++            return TRANSCRIBE_ERR_BACKEND;
++        }
++        t_prefill_compute_us = ggml_time_us() - t_prefill_compute_start;
++
++        // Logits row j predicts position T_prompt + j: keep the draft while
++        // the model agrees with it, then its own token.
++        const int64_t      t_prefill_logits_start = ggml_time_us();
++        std::vector<float> logits(static_cast<size_t>(vocab) * n_logits);
++        ggml_backend_tensor_get(pb.out, logits.data(), 0, logits.size() * sizeof(float));
++        logit0_max = logits[argmax(logits.data(), vocab)];
++        while (n_accepted < n_draft &&
++               argmax(logits.data() + static_cast<size_t>(vocab) * n_accepted, vocab) == draft[n_accepted]) {
++            generated_ids.push_back(draft[n_accepted]);
++            ++n_accepted;
++        }
++        next_tok = argmax(logits.data() + static_cast<size_t>(vocab) * n_accepted, vocab);
++        generated_ids.push_back(next_tok);
++        t_prefill_logits_us = ggml_time_us() - t_prefill_logits_start;
++
++        cc->kv_cache.n    = T_prompt + n_accepted;
++        cc->kv_cache.head = T_prompt + n_accepted;
++        cc->draft_ok      = n_accepted;
++    }
++    if (reuse) {
++        cc->kv_ids.assign(prompt_ids.begin(), prompt_ids.begin() + prefix_len);
++        cc->kv_tiled.assign(static_cast<size_t>(prefix_len), ref_tiled ? 1 : 0);
++    }
++    cc->t_prefill_us = t_prefill_build_us + t_prefill_compute_us + t_prefill_logits_us;
+ 
+     // Step loop.
+     const int32_t eos_id   = cm->hparams.eos_token_id;
+-    int           cur_past = T_prompt;
++    int           cur_past = T_prompt + n_accepted;
++    const int     first_past = cur_past;
+ 
+     // Build the step graph ONCE and reuse every step, sized for the actual
+     // workload (T_prompt written + up to max_new generated). Metal's flash-attn
+@@ -1084,7 +1257,7 @@ transcribe_status run_impl(transcribe_session *          session,
+         // Mask: mark the newly-added position as attendable. Positions
+         // [0, cur_past) were zeroed in prior iterations; just set the
+         // new one. (On iter 0, zero everything in [0, cur_past].)
+-        if (cur_past == T_prompt) {
++        if (cur_past == first_past) {
+             std::fill(step_mask.begin(), step_mask.begin() + cur_past + 1, mask_zero);
+         } else {
+             step_mask[cur_past] = mask_zero;
+@@ -1116,7 +1289,19 @@ transcribe_status run_impl(transcribe_session *          session,
+         }
+     }
+     t_step_loop_us = ggml_time_us() - t_step_loop_start;
+-    n_steps        = static_cast<int>(generated_ids.size()) - 1;
++    n_steps        = static_cast<int>(generated_ids.size()) - 1 - n_accepted;
++
++    // The header this run generated, as the next run's draft.
++    if (lang_prefix_ptr == nullptr && prefix_cache_enabled()) {
++        cc->header_draft.clear();
++        const int asr_text_id = cm->tok.find("<asr_text>");
++        for (size_t i = 0; asr_text_id >= 0 && i < generated_ids.size() && i < 8; ++i) {
++            if (generated_ids[i] == asr_text_id) {
++                cc->header_draft.assign(generated_ids.begin(), generated_ids.begin() + static_cast<long>(i) + 1);
++                break;
++            }
++        }
++    }
+ 
+     // Decode stopped at EOS (complete) or the generation budget / context width
+     // (truncated). Surface the latter via transcribe_was_truncated() + WARN; a
+@@ -1146,6 +1331,9 @@ transcribe_status run_impl(transcribe_session *          session,
+     // Decode generated ids to text (Tokenizer::decode handles the "gpt2"
+     // byte-level inversion natively).
+     std::string raw_text = cm->tok.decode(generated_ids.data(), static_cast<int>(generated_ids.size()));
++    if (forced_last) {  // report the forced header like a detected one
++        raw_text = cm->tok.decode(lang_prefix_ids.data(), static_cast<int>(lang_prefix_ids.size())) + raw_text;
++    }
+     cc->raw_text         = raw_text;  // pre-envelope text, via transcribe_raw_text
+ 
+     // Parse Qwen3-ASR output: auto-detect emits "language X<asr_text>text"
+@@ -1157,7 +1345,7 @@ transcribe_status run_impl(transcribe_session *          session,
+         // detected_language (reverse-mapped to BCP-47), but only when the
+         // caller did NOT supply a hint (the field reports what the model told
+         // us, not what we told it).
+-        if (lang_prefix_ptr == nullptr) {
++        if (lang_prefix_ptr == nullptr || forced_last) {
+             constexpr const char k_prefix[] = "language ";
+             const size_t         name_start = raw_text.find(k_prefix);
+             if (name_start != std::string::npos && name_start < sep) {
+@@ -1183,6 +1371,12 @@ transcribe_status run_impl(transcribe_session *          session,
+     // Optional perf breakdown (finer split than the public mel/encode/decode
+     // timings), gated on env var.
+     if (transcribe::env::flag("TRANSCRIBE_PERF_DEBUG")) {
++        log_msg(TRANSCRIBE_LOG_LEVEL_DEBUG,
++                "qwen3_asr prefill: T_prompt=%d audio=%d prefix=%d reused=%d prefilled=%d draft=%d/%d "
++                "prefill_ms=%.2f steps=%d step_ms=%.2f decode_ms=%.2f l0=%a",
++                T_prompt, T_enc, prefix_len, cc->kv_reused, cc->kv_prefilled + n_draft, cc->draft_ok, n_draft,
++                cc->t_prefill_us / 1000.0, n_steps, t_step_loop_us / 1000.0,
++                (ggml_time_us() - t_dec_start) / 1000.0, static_cast<double>(logit0_max));
+         const double ms     = 1.0 / 1000.0;
+         const double sum_ms = (cc->t_mel_us + t_enc_build_us + cc->t_encode_us + t_enc_d2h_us + t_prefill_build_us +
+                                t_prefill_compute_us + t_prefill_logits_us + t_step_loop_us) *
+@@ -2056,6 +2250,117 @@ transcribe_status stream_run_chunks(QwenAsrSession * cc, QwenAsrModel * cm, int
+     return TRANSCRIBE_OK;
+ }
+ 
++// Fill the prompt-prefix cache for a run with these params before its audio
++// is known: the chat frame and the system context, up to and including
++// <|audio_start|>, which is everything the prompt has before the audio. A
++// stream begins while the phrase is still being spoken, so this work is off
++// the path from the end of the audio to the text; finalize then prefills
++// only the audio and what follows it.
++//
++// The rows must be computed on the attention path of the final prompt
++// (tiled iff it has 64+ rows, decoder.h), which depends on the audio length.
++// T_enc_min is a lower bound on it (the audio so far): the prefix is
++// computed for the path that bound implies, and stream_feed calls this again
++// once the audio has grown enough to change it. The system context is fitted
++// as for a run with no audio; if the real run fits it differently, its
++// prompt simply shares less with the cache.
++transcribe_status prefill_prompt_prefix(QwenAsrSession * cc, QwenAsrModel * cm, const transcribe_run_params * params,
++                                        int T_enc_min) {
++    if (!prefix_cache_enabled()) {
++        return TRANSCRIBE_OK;
++    }
++    const int64_t        t0      = ggml_time_us();
++    const int            ceiling = qwen3_context_ceiling(cc->n_ctx, cm->hparams);
++    std::vector<int32_t> system_ids;
++    if (const transcribe_status st = encode_system_context(
++            cm->tok, params, ceiling - k_gen_reserve - prompt_tokens_without_system(0, nullptr), system_ids);
++        st != TRANSCRIBE_OK) {
++        return st;
++    }
++    std::vector<int32_t> lang_ids;
++    if (params->language != nullptr && params->language[0] != '\0') {
++        if (const transcribe_status st = encode_language_prefix(cm->tok, params->language, lang_ids);
++            st != TRANSCRIBE_OK) {
++            return st;
++        }
++    }
++    std::vector<int32_t> ids;
++    std::vector<int64_t> audio_positions;
++    build_prompt_tokens(cm->hparams, cm->chat_tokens, /*T_enc=*/0, system_ids, &lang_ids, ids, audio_positions);
++    // <|im_start|>system\n + system + <|im_end|>\n<|im_start|>user\n<|audio_start|>
++    const int prefix_len = static_cast<int>(system_ids.size()) + 9;
++    if (prefix_len > static_cast<int>(ids.size()) || ids[prefix_len - 1] != cm->hparams.audio_start_token_id) {
++        return TRANSCRIBE_ERR_INVALID_ARG;
++    }
++    const bool tiled        = static_cast<int>(ids.size()) + T_enc_min >= k_fa_tile_rows;
++    cc->stream_prompt_rows  = static_cast<int>(ids.size());
++    cc->stream_prefix_tiled = tiled ? 1 : 0;
++    const int n_past        = common_prefix(cc, ids.data(), prefix_len, tiled);
++    if (n_past == prefix_len) {
++        return TRANSCRIBE_OK;
++    }
++    if (cc->kv_cache.ctx == nullptr) {
++        const int n_ctx = std::min(1024, ceiling);
++        if (prefix_len > n_ctx) {
++            return TRANSCRIBE_OK;  // left to the run, which sizes the cache itself
++        }
++        const ggml_type kv_type = cc->kv_type == TRANSCRIBE_KV_TYPE_F32 ? GGML_TYPE_F32 : GGML_TYPE_F16;
++        if (!transcribe::causal_lm::kv_init(cc->kv_cache, cm->plan.primary, n_ctx, cm->hparams.dec_n_kv_heads,
++                                            cm->hparams.dec_head_dim, cm->hparams.dec_n_layers, kv_type)) {
++            return TRANSCRIBE_ERR_OOM;
++        }
++        clear_prefix_cache(cc);
++    } else if (prefix_len > cc->kv_cache.n_ctx) {
++        return TRANSCRIBE_OK;
++    }
++    if (const transcribe_status st = ensure_sched(cc, cm); st != TRANSCRIBE_OK) {
++        return st;
++    }
++    if (reset_compute_ctx(cc, 16) != TRANSCRIBE_OK) {
++        return TRANSCRIBE_ERR_OOM;
++    }
++    const int         T_chunk = prefix_len - n_past;
++    PrefillChunkBuild pb      = build_prefill_chunk_graph(cc->compute_ctx, cm->weights, cm->hparams, cc->kv_cache,
++                                                          T_chunk, prefix_len, T_chunk, 0, 0, /*n_logits=*/0,
++                                                          cc->decoder_use_flash, chunk_fa_q_rows(T_chunk, tiled));
++    if (pb.graph == nullptr) {
++        return TRANSCRIBE_ERR_GGUF;
++    }
++    ggml_backend_sched_reset(cc->sched);
++    if (!TRANSCRIBE_ALLOC_SCHED_GRAPH(cc->sched, pb.graph, "qwen3_asr")) {
++        return TRANSCRIBE_ERR_OOM;
++    }
++    apply_sched_threads(cc);
++    cc->kv_ids.resize(static_cast<size_t>(n_past));
++    cc->kv_tiled.resize(static_cast<size_t>(n_past));
++    ggml_backend_tensor_set(pb.input_ids_in, ids.data() + n_past, 0, static_cast<size_t>(T_chunk) * sizeof(int32_t));
++    {
++        std::vector<int32_t> positions(T_chunk);
++        std::vector<int64_t> kv_idx(T_chunk);
++        for (int i = 0; i < T_chunk; ++i) {
++            positions[i] = n_past + i;
++            kv_idx[i]    = n_past + i;
++        }
++        ggml_backend_tensor_set(pb.positions_in, positions.data(), 0, positions.size() * sizeof(int32_t));
++        ggml_backend_tensor_set(pb.kv_idx_in, kv_idx.data(), 0, kv_idx.size() * sizeof(int64_t));
++    }
++    set_chunk_mask(pb, prefix_len, T_chunk, n_past);
++    if (ggml_backend_sched_graph_compute(cc->sched, pb.graph) != GGML_STATUS_SUCCESS) {
++        return TRANSCRIBE_ERR_BACKEND;
++    }
++    cc->kv_ids.assign(ids.begin(), ids.begin() + prefix_len);
++    cc->kv_tiled.assign(static_cast<size_t>(prefix_len), tiled ? 1 : 0);
++    const int64_t dt = ggml_time_us() - t0;
++    cc->begin_prefilled += T_chunk;
++    cc->t_begin_prefill_us += dt;
++    if (transcribe::env::flag("TRANSCRIBE_PERF_DEBUG")) {
++        log_msg(TRANSCRIBE_LOG_LEVEL_DEBUG,
++                "qwen3_asr stream begin: prompt prefix %d tokens (%s), %d cached, %d prefilled in %.2f ms",
++                prefix_len, tiled ? "tiled" : "rows", n_past, T_chunk, dt / 1000.0);
++    }
++    return TRANSCRIBE_OK;
++}
++
+ transcribe_status stream_validate(const transcribe_session * session,
+                                   const transcribe_run_params * /*run_params*/,
+                                   const transcribe_stream_params * stream_params) {
+@@ -2103,6 +2408,15 @@ transcribe_status stream_begin(transcribe_session *          session,
+     cc->stream_run_params = *run_params;
+     stream_clear(cc);
+     transcribe::debug::init();
++    // The prompt before the audio is known now: prefill it while the audio
++    // arrives. A failure here only costs the cache.
++    cc->stream_prefix_tiled = -1;
++    cc->begin_prefilled     = 0;
++    cc->t_begin_prefill_us  = 0;
++    if (prefill_prompt_prefix(cc, cm, run_params, /*T_enc_min=*/0) != TRANSCRIBE_OK) {
++        clear_prefix_cache(cc);
++        cc->stream_prefix_tiled = -1;
++    }
+     return TRANSCRIBE_OK;
+ }
+ 
+@@ -2147,6 +2461,17 @@ transcribe_status stream_feed(transcribe_session *       session,
+         cc->stream_rerun_feed += n_rerun;
+         cc->stream_conv_us += ggml_time_us() - t_conv0;
+     }
++    // The audio so far may now be long enough that the final prompt takes the
++    // tiled attention path: recompute the cached prefix for it, still while
++    // the audio arrives.
++    if (cc->stream_prefix_tiled == 0 && cc->stream_n_frames > 0) {
++        const int T_enc_min = compute_encoder_timing(cc->stream_n_frames, cm->hparams).T_enc;
++        if (cc->stream_prompt_rows + T_enc_min >= k_fa_tile_rows &&
++            prefill_prompt_prefix(cc, cm, &cc->stream_run_params, T_enc_min) != TRANSCRIBE_OK) {
++            clear_prefix_cache(cc);
++            cc->stream_prefix_tiled = -1;
++        }
++    }
+     cc->stream_feed_us += ggml_time_us() - t_start;
+ 
+     if (update != nullptr) {
+diff --git a/src/arch/qwen3_asr/qwen3_asr.h b/src/arch/qwen3_asr/qwen3_asr.h
+index e052dd14..d5d8d950 100644
+--- a/src/arch/qwen3_asr/qwen3_asr.h
++++ b/src/arch/qwen3_asr/qwen3_asr.h
+@@ -132,6 +132,30 @@ struct QwenAsrSession final : public transcribe_session {
+     int                   stream_rerun_feed = 0;  // chunks re-run during feed (max rose)
+     int                   stream_recomputed = 0;  // chunks re-run at finalize
+ 
++    // Prompt-prefix cache (see run_impl). kv_ids are the prompt tokens whose
++    // K/V sit in kv_cache rows [0, kv_ids.size()): the chat frame and the
++    // system context up to and including <|audio_start|> of the last prompt.
++    // A run whose prompt starts with the same tokens prefills only the rest.
++    std::vector<int32_t> kv_ids;
++    // Per cached row: computed by ggml's tiled flash-attention path (a graph
++    // of 64+ query rows) or row by row; a row is reused only by a prompt
++    // whose single-graph prefill would take the same path (decoder.h).
++    std::vector<uint8_t> kv_tiled;
++    // The "language X<asr_text>" ids the last auto-detect run generated. The
++    // next auto-detect run appends them to its prompt as a draft and keeps
++    // the ones the model itself predicts (greedy verification).
++    std::vector<int32_t> header_draft;
++    // Last run / stream_begin, for the perf log.
++    int     kv_reused        = 0;  // prompt rows taken from the cache
++    int     kv_prefilled     = 0;  // prompt rows computed
++    int     draft_n          = 0;  // header tokens drafted
++    int     draft_ok         = 0;  // of which accepted
++    int64_t t_prefill_us     = 0;  // prefill graph build + compute
++    int     begin_prefilled  = 0;  // rows prefilled by stream_begin / stream_feed
++    int64_t t_begin_prefill_us = 0;
++    int     stream_prefix_tiled = -1;  // path of the stream's cached prefix (-1: none)
++    int     stream_prompt_rows  = 0;   // the stream's prompt rows besides the audio
++
+     QwenAsrSession() = default;
+     ~QwenAsrSession() override;
+ };
+diff --git a/src/causal_lm/causal_lm.cpp b/src/causal_lm/causal_lm.cpp
+index 08744f27..d1bb4e6a 100644
+--- a/src/causal_lm/causal_lm.cpp
++++ b/src/causal_lm/causal_lm.cpp
+@@ -509,7 +509,8 @@ ggml_tensor * block_step_n(ggml_context *      ctx,
+                            ggml_tensor *       mask,
+                            ggml_tensor *       positions,
+                            ggml_tensor *       kv_idx,
+-                           bool                use_flash) {
++                           bool                use_flash,
++                           int                 fa_q_rows) {
+     const int64_t n_heads    = params.n_heads;
+     const int64_t n_kv_heads = params.n_kv_heads;
+     const int64_t n_groups   = n_heads / n_kv_heads;
+@@ -571,7 +572,30 @@ ggml_tensor * block_step_n(ggml_context *      ctx,
+     ggml_tensor * Q_att = ggml_cont(ctx, ggml_permute(ctx, Q, 0, 2, 1, 3));
+ 
+     ggml_tensor * o;
+-    if (use_flash) {
++    if (use_flash && fa_q_rows > 0 && T_seq > fa_q_rows) {
++        // Q_att is contiguous [D, T_seq, H] and mask [max_n_kv, T_seq]: both
++        // slice along T_seq as views.
++        o = nullptr;
++        for (int a = 0; a < T_seq; a += fa_q_rows) {
++            const int     n  = std::min(fa_q_rows, T_seq - a);
++            ggml_tensor * qb = ggml_view_3d(ctx, Q_att, head_dim, n, n_heads, Q_att->nb[1], Q_att->nb[2],
++                                            static_cast<size_t>(a) * Q_att->nb[1]);
++            ggml_tensor * mb = ggml_view_2d(ctx, mask, mask->ne[0], n, mask->nb[1], static_cast<size_t>(a) * mask->nb[1]);
++            ggml_tensor * ob = ggml_flash_attn_ext(ctx, qb, K_att, V_att, mb, scale_attn, /*max_bias=*/0.0f,
++                                                   /*logit_softcap=*/0.0f);
++            ob               = ggml_reshape_2d(ctx, ob, q_dim, n);
++            o                = (o == nullptr) ? ob : ggml_concat(ctx, o, ob, /*dim=*/1);
++        }
++    } else if (use_flash && fa_q_rows < 0 && T_seq < -fa_q_rows) {
++        // Zero query rows up to -fa_q_rows; their outputs are dropped. The
++        // output is [D, H, rows]: keep the first T_seq rows.
++        const int     rows = -fa_q_rows;
++        ggml_tensor * qp   = ggml_pad(ctx, Q_att, 0, rows - T_seq, 0, 0);
++        ggml_tensor * op   = ggml_flash_attn_ext(ctx, qp, K_att, V_att, mask, scale_attn, /*max_bias=*/0.0f,
++                                                 /*logit_softcap=*/0.0f);
++        o = ggml_view_2d(ctx, op, q_dim, T_seq, op->nb[2], 0);
++        o = ggml_cont(ctx, o);
++    } else if (use_flash) {
+         o = ggml_flash_attn_ext(ctx, Q_att, K_att, V_att, mask, scale_attn, /*max_bias=*/0.0f,
+                                 /*logit_softcap=*/0.0f);
+         o = ggml_reshape_2d(ctx, o, q_dim, T_seq);
+diff --git a/src/causal_lm/causal_lm.h b/src/causal_lm/causal_lm.h
+index 81724a6b..7ca0b0cd 100644
+--- a/src/causal_lm/causal_lm.h
++++ b/src/causal_lm/causal_lm.h
+@@ -202,6 +202,17 @@ int prefill_chunk_size();
+ // `kv_idx` (i64 [T_seq]) and reads the full [0, max_n_kv) window. `mask`
+ // is [max_n_kv, T_seq] f16 — column `c` masks the c-th query position.
+ // Used by the spec-decode verify pass.
++//
++// fa_q_rows chooses how the flash attention sees the T_seq query rows.
++// ggml's CPU kernel takes a tiled path for a block of 64 or more query rows
++// and a row-by-row one below that; the two round differently, but within
++// each path every row's result depends only on that row, the K/V and the
++// mask. 0: one op over the T_seq rows (the kernel decides). > 0: ops of at
++// most fa_q_rows rows (row-by-row whatever T_seq is, for fa_q_rows < 64).
++// < 0: one op over the rows padded with zero rows to at least -fa_q_rows
++// (tiled for -fa_q_rows >= 64); `mask` must then have that many rows. Either
++// way a prompt prefilled in several graphs (a cached prefix, then the rest)
++// can reproduce, row for row, the path one graph over the whole prompt takes.
+ ggml_tensor * block_step_n(ggml_context *      ctx,
+                            ggml_cgraph *       gf,
+                            ggml_tensor *       x,  // [hidden, T_seq]
+@@ -211,10 +222,11 @@ ggml_tensor * block_step_n(ggml_context *      ctx,
+                            int                 layer_idx,
+                            int                 T_seq,
+                            int                 max_n_kv,
+-                           ggml_tensor *       mask,       // [max_n_kv, T_seq] f16
++                           ggml_tensor *       mask,       // [max_n_kv, T_seq (or the padded rows)] f16
+                            ggml_tensor *       positions,  // [T_seq] i32
+                            ggml_tensor *       kv_idx,     // [T_seq] i64
+-                           bool                use_flash);
++                           bool                use_flash,
++                           int                 fa_q_rows = 0);
+ 
+ // Block forward (batched step). Runs one block on B new tokens
+ // (x = [hidden, B]), one per utterance stepping in lockstep against a

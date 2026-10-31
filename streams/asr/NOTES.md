@@ -4,7 +4,7 @@ Qwen3-ASR-0.6B on the ThinkSmart View, for short voice commands to a chatbot in 
 
 ## Setup
 
-- Runtime: [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp) at `5700f127e38dd53c4735ea23ef743b4b538eacd4`, statically cross-built for Cortex-A53 (`scripts/build-transcribe.sh`, `-mcpu=cortex-a53`, NEON, no dotprod), plus `patches/0001-qwen3_asr-quantized-conv-stem.patch` and `patches/0002-qwen3_asr-incremental-conv-stem.patch` (apply in order with `git apply`).
+- Runtime: [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp) at `5700f127e38dd53c4735ea23ef743b4b538eacd4`, statically cross-built for Cortex-A53 (`scripts/build-transcribe.sh`, `-mcpu=cortex-a53`, NEON, no dotprod), plus `patches/0001-qwen3_asr-quantized-conv-stem.patch`, `patches/0002-qwen3_asr-incremental-conv-stem.patch` and `patches/0003-qwen3_asr-prompt-prefix-cache.patch` (apply in order with `git apply`; the measurements before the section "Reusing the decoder prompt between phrases" are without 0003).
 - Model: `handy-computer/Qwen3-ASR-0.6B-gguf` (`downloads/models/`, not in git). About 0.8B parameters: 18-layer bidirectional audio encoder (conv stem in 1 s chunks, attention in 8 s windows) feeding a 28-layer Qwen3 decoder.
 - Test sets (`scripts/make-cmdset.py`): 15 short clips per language. English from LibriSpeech test-clean (2.0-2.8 s), Japanese and Mandarin from FLEURS test (6.4-7.5 s and 4.0-4.9 s). English is scored as WER with Whisper's English normaliser; Japanese and Mandarin as CER (`scripts/score.py`).
 - Device runs: `scripts/device-bench-qwen.sh QUANT THREADS LANG` (model and clips in `/dev/shm`, under the device lock), `scripts/device-perf-qwen.sh` (transcribe.cpp's `TRANSCRIBE_PERF_DEBUG` breakdown, one clip) and `scripts/device-perf-set-qwen.sh` (the same over whole sets), `scripts/device-stream-qwen.sh` (latency after the end of speech, offline vs streaming). All numbers below are on the baseline kernel with the 75/85/100 °C thermal policy, CPUs at 1804.8 MHz, 8 threads, 2026-10-30.
@@ -126,7 +126,7 @@ Text a phrase at a time while the user is still speaking, with Qwen3-ASR only: S
 
 Not available through the public API (worked around or left out, not patched):
 - Qwen3-ASR does not have `TRANSCRIPT_PREFIX` (`--prefix` is an error for this family, `docs/prompting.md`); it has `CONTEXT_PROMPT` (`--prompt`), which puts the text in the system message. That is what is used. A transcript prefix would not fit anyway: it requires the audio to contain the prefix's speech.
-- No way to keep the KV cache of the prompt between runs: the chat frame (15 tokens) and the context are prefilled again for every phrase, at about 34 ms per token on this CPU. The context comes before the audio in the prompt, so a cached, growing system-message prefix would remove most of its cost.
+- No way to keep the KV cache of the prompt between runs: the chat frame (15 tokens) and the context are prefilled again for every phrase, at about 34 ms per token on this CPU. The context comes before the audio in the prompt, so a cached, growing system-message prefix would remove most of its cost. (Now `patches/0003`, section "Reusing the decoder prompt between phrases".)
 - No way to restrict language detection to a set (en/ja/zh); no per-run thread count; Qwen3-ASR does not report `supports_spec_decode`, so `spec_k_drafts` has no effect for it.
 - At most one run in flight per model: a phrase cannot be encoded while the previous phrase is still decoding unless a second model instance is loaded (another ~600 MB).
 
@@ -204,6 +204,89 @@ Where it falls short:
 
 Combining with the incremental conv stem (`patches/0002`): run each phrase through `transcribe_stream_begin/feed/finalize` instead of `transcribe_run`, starting the stream at the phrase's speech onset, so the conv stem (60 % of the encoder) runs while that phrase is spoken and only the transformer and decoder remain at the cut. That would take about 0.8 s off each phrase's 1.8 x (en 2.5 s phrase: 0.5-0.8 s). Two constraints: only one run may be in flight per model, so the conv-stem chunks of phrase n+1 would have to wait for (or be interleaved between) the decode of phrase n, which is exactly when the queue builds; and the context prompt is fixed at `transcribe_stream_begin`, before the previous phrase's text may be ready. The decoder is the larger remaining cost (about 70 % of each phrase); a cached prompt/context prefix and a lower-bit output head (Next 3) help the phrase path more than the offline one, since it pays the prompt once per phrase.
 
+## Reusing the decoder prompt between phrases
+
+`patches/0003-qwen3_asr-prompt-prefix-cache.patch` (on top of 0001 and 0002) keeps the decoder's K/V for the part of the prompt that does not change between phrases and prefills it before the phrase ends.
+
+### What each phrase's decoder does
+
+The prompt is `<|im_start|>system\n` + context + `<|im_end|>\n<|im_start|>user\n<|audio_start|>` + audio + `<|audio_end|><|im_end|>\n<|im_start|>assistant\n`, then the model writes `language X<asr_text>` and the text. So the context sits before the audio, and everything before `<|audio_start|>` is known as soon as the previous phrase's text is: the 9 tokens of the frame around the system message, and the context, which grows by appending a phrase at a time. Only the audio rows and the 6 tokens after them are new for each phrase. No reordering is needed.
+
+Device, recogniser path (`phrase/sla-file`, below), 6 threads, median per phrase of the 45 command clips (single phrases, empty context), 0001+0002:
+
+| Set | Prompt | of which frame / context / audio / after the audio | Prefill | per row | Steps (header + text) | per step | Decoder | Encoder after the cut |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| en | 45 | 9 / 0 / 30 / 6 | 1961 ms | 44 ms | 12 (3 + 9) | 102 ms | 3094 ms | 823 ms |
+| ja | 61 | 9 / 0 / 46 / 6 | 2646 ms | 44 ms | 17 (3 + 14) | 106 ms | 4559 ms | 1189 ms |
+| zh | 63 | 9 / 0 / 48 / 6 | 2727 ms | 43 ms | 16 (3 + 13) | 106 ms | 4418 ms | 1141 ms |
+
+The prefill is compute-bound at about 44 ms per row on 6 threads; the audio is 13 rows per second of speech. Later phrases of an utterance carry the text so far as context: 10-30 more rows each on the phrase set (0.4-1.3 s of prefill).
+
+### The change
+
+- Session state: the prompt tokens whose K/V are in the cache rows `[0, n)` (the frame and context up to `<|audio_start|>` of the last prompt). A run keeps the rows of the longest common prefix with its own prompt, prefills the rest with a chunked prefill graph (`build_prefill_chunk_graph`: positions from `n`, KV width the whole prompt, the usual causal mask over the cached rows), and records its own prefix afterwards. Rows past the prefix need no clearing (they are masked and rewritten), which also drops the 117 MB KV clear the uncached path does per run.
+- `transcribe_stream_begin` prefills the prefix of the run it will finish (frame and context; nothing about the audio is needed), so with the recogniser's streaming the whole prefix is computed while the phrase is spoken, and after the cut only the audio rows and the 6 tokens after them remain. `transcribe_run` alone gets whatever prefix the last run left.
+- Exactness. ggml's CPU flash attention takes a tiled path when a graph has 64 or more query rows and a row-by-row one below that, and they round differently; within each path a row's result depends only on that row, the K/V and the mask (checked in `ggml-cpu/ops.cpp`), and the matrix products on the A53 (no repacked weights) are per row. So the result of a prefill split across graphs equals the single-graph one if every row takes the path the single graph over the whole prompt would: each cached row records its path and is reused only by a prompt that would take the same one (prompt of 64+ rows or not); a chunk under 64 rows of a tiled prompt pads its query rows with zero rows to 64 for the attention only, and a chunk of 64+ rows of a row-by-row prompt runs its attention in blocks of 32 (`causal_lm::block_step_n`, new `fa_q_rows` argument). `stream_begin` cannot know the audio length, so it computes the prefix for a short prompt, and `stream_feed` recomputes it on the tiled path once the audio so far makes the prompt 64 rows or longer (still during the speech). A prompt with nothing cached runs the unchanged single-graph prefill.
+- `TRANSCRIBE_QWEN3_NO_PREFIX_CACHE=1` switches it all off (the 0001+0002 path, for A/B runs). `TRANSCRIBE_PERF_DEBUG` logs one line per run: prompt rows, reused, prefilled, prefill time, and the max logit after the prompt in hex (`l0=`) for bitwise comparisons.
+
+Two options, both off by default:
+- Header draft (`TRANSCRIBE_QWEN3_HEADER_DRAFT=1`): the `language X<asr_text>` ids of the last auto-detected run are appended to the prompt; the prefill's logits at those rows show how many the model predicts itself (greedy), and those are taken as generated (a public speculative-decoding technique with the previous phrase as the draft). Language detection is kept: a wrong draft is just rejected. It is not bit-exact, because the verified rows are computed by the prefill graph, not the step graph, and round differently.
+- Forced header (`TRANSCRIBE_QWEN3_FORCE_LAST_HEADER=1`, experiment): for a run with context (a later phrase of an utterance), force the last detected header without checking it.
+
+### Results on the device
+
+`scripts/device-sla.sh TAG cmd --modes off,prefix,draft` runs `phrase/sla-file`: straylight-listen's recogniser (straylight-voice `listen/asr/straylight_asr.cpp`, compiled from that checkout) over WAV files fed in real time, each file once per mode in the same process (rotating the order), as a transient unit next to the running services (installed read-only models, `MemoryMax`, the service's priorities). Caption lag = VAD end of the phrase's speech to its text; end of speech to text = the same for the last phrase. 6 threads, 2026-10-31 22:19-22:42.
+
+| Set | Mode | Prefill | Decoder | Caption lag | End of speech to text | Accuracy |
+| --- | --- | --- | --- | --- | --- | --- |
+| en (15) | 0001+0002 | 1961 ms | 3094 ms | 4.33 s | 4.33 s | WER 2.08 % |
+| en | prefix cache | **1598 ms** | 2735 ms | **4.07 s** | **4.07 s** | WER 2.08 % |
+| en | + header draft | 1793 ms | 2613 ms | 3.84 s | 3.84 s | WER 2.08 % |
+| ja (15, 18 phrases) | 0001+0002 | 2646 ms | 4559 ms | 6.39 s | 6.68 s | CER 10.39 % |
+| ja | prefix cache | **2315 ms** | 4209 ms | **5.99 s** | **6.12 s** | CER 9.83 % * |
+| ja | + header draft | 2486 ms | 4089 ms | 5.86 s | 5.96 s | CER 9.83 % * |
+| zh (15) | 0001+0002 | 2727 ms | 4418 ms | 6.18 s | 6.18 s | CER 2.99 % |
+| zh | prefix cache | **2371 ms** | 3968 ms | **5.77 s** | **5.77 s** | CER 2.99 % |
+| zh | + header draft | 2568 ms | 3835 ms | 5.64 s | 5.64 s | CER 2.99 % |
+
+- With empty context (single commands) the cache saves the 9 frame rows: 0.33-0.36 s of prefill and 0.26-0.41 s of caption lag. The prefix was prefilled at stream begin in 0.41 s (9 rows), during the speech.
+- English: every phrase's first-token logit is bit-identical with and without the cache (15 of 15), as are the texts.
+- \* These runs used an earlier version of the patch that ran the attention of every cached-path row row by row, which differs from the uncached tiled path for prompts of 64+ rows: 3 of the 18 Japanese phrases changed by one word (CER 10.39 to 9.83 %, noise), Mandarin none. The final patch reproduces the uncached path row for row (above); its bitwise check on the device for 64+ row prompts (`scripts/device-prefix-check.sh`, `scripts/prefix-check.py`) and the phrase-set runs could not be done: at 23:00 straylight-listen.service was reinstalled with the TTS loaded (RSS 840-920 MiB), and a second recogniser no longer fits. Under an 800 MB cap the benchmark re-reads its model pages from eMMC (22-28 s caption lag, invalid), and with a 1.1 GB cap the whole system started reclaiming; both were stopped (the service's major faults did not change, no OOM events). They need a window with the service stopped.
+- The header draft saves 3 decoder steps (310 ms) for 3 more prefill rows (135-195 ms) when the language repeats: 0.13-0.23 s less lag. Accepted 43 of 45 drafted tokens (en), 52 of 54 (ja), 43 of 45 (zh); the first utterance of a run drafts from the warm-up.
+
+### Phrase set (laptop, accuracy)
+
+`phrase/sla-file --modes off,prefix,draft,force` over the 33 phrase-set utterances on the laptop (native build, real-time feeding, 6 threads; timings on the busy laptop are not meaningful). Corpus WER/CER of the joined text:
+
+| Set | 0001+0002 | prefix cache | + header draft | forced header (experiment) |
+| --- | --- | --- | --- | --- |
+| en (4) | WER 2.08 % | WER 2.08 % | WER 2.08 % | WER 2.08 % |
+| ja (7) | CER 8.61 % | CER 8.61 % | CER 8.01 % | CER 8.01 % |
+| zh (5) | CER 3.36 % | CER 3.36 % | CER 3.36 % | CER 3.36 % |
+| mixed (8) | CER 5.49 % | CER 5.49 % | CER 5.73 % | **CER 40.33 %** |
+| long en (3) | WER 4.20 % | WER 4.20 % | WER 4.20 % | WER 4.20 % |
+| long ja (3) | CER 20.81 % | CER 20.81 % | CER 20.81 % | CER 20.81 % |
+| long zh (3) | CER 6.45 % | CER 6.45 % | CER 6.45 % | CER 6.45 % |
+
+- Prefix cache: all 33 texts identical to the uncached path. 88 of the 92 phrases were streamed and found their whole prompt prefix (frame + context) cached at the cut; the later phrases of an utterance carried 6-47 context rows (median 18) besides the 9 frame rows. On the device that is 0.4 s (frame) + about 0.8 s (median context) of prefill moved into the speech for each streamed later phrase, 2 s for the longest; a phrase queued behind the previous one (the worker still busy) gets only the rows its prompt shares with the last run, typically the frame. Not measured on the device (above). (On the laptop the x86 kernels, unlike the A53's, are not row-independent, so the first-token logits are bit-identical for only part of the phrases there; the texts still agree.)
+- Header draft: 4 of 33 texts change by a word (ja-6 `ニカヤ野菜` to the correct `肉や野菜`; ja-5, mx-5, lx-ja-2 one word each), net CER unchanged to slightly better outside the mixed set. Drafts are rejected at a language switch (mixed: 25 of 57 tokens accepted), which costs the drafted rows.
+- Forcing the previous phrase's language is not safe: at a language switch the model translates the speech into the forced language (`軍刀や湖水では…` → `Guntou and Mizumiyō are not necessary in the sea.`), mixed-set CER 5.5 → 40 %. Auto-detection stays; the forced header is only an experiment switch.
+
+### Decision and what is deployed
+
+- The prompt-prefix cache is a clear win: identical results, 0.36 s less prefill for every phrase (the frame), plus the context rows for later phrases, with no extra memory. It is on by default in 0003; straylight-voice carries the patch in `listen/asr/patches/` (no recogniser code change: it already begins each stream while the phrase is spoken). Not installed on the device: the installed straylight-listen is the one the TTS work builds and installs, and the next `listen/asr/build.sh` picks up 0003.
+- The header draft (another 0.13-0.23 s per phrase when the language repeats) is left opt-in, because it is not bit-exact; enabling it would be `TRANSCRIBE_QWEN3_HEADER_DRAFT=1` in the unit's environment.
+- Left to do with the service stopped (a second recogniser no longer fits next to the TTS): `scripts/device-prefix-check.sh` (bitwise check of 64+ row prompts on the A53) and `scripts/device-sla.sh TAG phrase --modes off,prefix,draft` (caption lag on the phrase set).
+
+### Scripts
+
+| Script | What |
+| --- | --- |
+| `phrase/sla-file.cpp` (built by `phrase/build.sh`) | straylight-listen's recogniser over WAV files, per-phrase times and the decoder prefill log, `--modes off,prefix,draft,force` |
+| `scripts/device-sla.sh TAG cmd\|phrase [options]` | that on the tablet next to the running services (locked, memory-capped, installed models) |
+| `scripts/sla-summary.py RESULTS.jsonl...` | prefill, decoder, caption lag, end of speech to text, accuracy per set and mode; text and logit comparisons |
+| `scripts/device-prefix-check.sh [N] [LANGS]`, `scripts/prefix-check.py DIR` | bitwise check of the cache against the uncached path with transcribe-cli (batch, streaming, with and without context) |
+
 ## The GPU
 
 Not useful for this model: the Adreno 506 reaches about 14 GFLOP/s FP32 in OpenGL ES 3.1 compute shaders, half the CPU's Q8_0 rate, with slow readback and shared memory bandwidth (`../gpu-compute/NOTES.md`).
@@ -211,6 +294,6 @@ Not useful for this model: the Adreno 506 reaches about 14 GFLOP/s FP32 in OpenG
 ## Next
 
 1. Speculative decoding (`--spec-k-drafts`) for the decoder steps (Qwen3-ASR does not report `supports_spec_decode` at the pinned commit).
-2. Shorter prompt: 18 of the 80 prefill tokens are prompt.
+2. Shorter prompt: 18 of the 80 prefill tokens are prompt. (The 9 frame tokens and the context are now cached, `patches/0003`; what is left per phrase is the audio rows and the 6 tokens after them.)
 3. The output head is 122 MiB of Q6_K read on every decoder step; a lower-bit head would cut step time.
 4. Choose and benchmark a speech synthesiser for English, Japanese and Mandarin; check recognition and synthesis fit in RAM together.
