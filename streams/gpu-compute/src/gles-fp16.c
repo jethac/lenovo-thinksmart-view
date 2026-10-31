@@ -104,7 +104,8 @@ static PFNEGLGETPROCADDRESSPROC p_eglGetProcAddress;
     X(PFNGLDISABLEPROC, glDisable)                                             \
     X(PFNGLGENVERTEXARRAYSPROC, glGenVertexArrays)                             \
     X(PFNGLBINDVERTEXARRAYPROC, glBindVertexArray)                             \
-    X(PFNGLDRAWARRAYSPROC, glDrawArrays)
+    X(PFNGLDRAWARRAYSPROC, glDrawArrays)                                       \
+    X(PFNGLCLEARBUFFERFVPROC, glClearBufferfv)
 #define DECL(T, n) static T p_##n;
 EGLF(DECL)
 GLF(DECL)
@@ -487,6 +488,19 @@ static void bench_one(const kernel_t *k)
         t = now() - t0;
     } while (t < 0.5);
     double gf = 2.0 * M * N * K * iters / t / 1e9;
+    // Verify a fresh run: clear the output first, so a result left over from an
+    // earlier (or hangcheck-killed) submission cannot pass.
+    if (k->frag) {
+        static const float z[4] = {0, 0, 0, 0};
+        p_glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        for (int t2 = 0; t2 < k->rm; t2++) p_glClearBufferfv(GL_COLOR, t2, z);
+        fs_run(k, prog);
+    } else {
+        p_glBindBuffer(GL_SHADER_STORAGE_BUFFER, buf[2]);
+        p_glBufferData(GL_SHADER_STORAGE_BUFFER, (size_t)M * N * 4, NULL, GL_DYNAMIC_READ);
+        cs_run(k, prog);
+    }
+    p_glFinish();
     memset(C, 0, (size_t)M * N * 4);
     if (k->frag) fs_read(k);
     else cs_read();

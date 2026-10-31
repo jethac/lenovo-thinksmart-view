@@ -14,8 +14,11 @@ LOG=$TOP/results/fp16-$(date +%Y%m%d-%H%M).log
 "${A[@]}" push -q "$TOP/build/gles-fp16" "$R/" </dev/null
 ENVS="-E LD_LIBRARY_PATH=$R/usr/lib -E __EGL_VENDOR_LIBRARY_DIRS=$R/usr/share/glvnd/egl_vendor.d"
 ENVS+=" -E LIBGL_DRIVERS_PATH=$R/usr/lib/dri -E GBM_BACKENDS_PATH=$R/usr/lib/gbm ${KC:+-E KC=$KC} ${CHUNK:+-E CHUNK=$CHUNK}"
+hc() { "${A[@]}" shell 'dmesg | grep -c "hangcheck detected"' </dev/null | tr -d '\r'; }
 run() {
+    local h0; h0=$(hc)
     "${A[@]}" shell "timeout 900 systemd-run --quiet --wait --pipe -p MemoryMax=400M -p WorkingDirectory=$R $ENVS $R/gles-fp16 bench $*" </dev/null
+    echo "hangchecks during this run: $(( $(hc) - h0 ))"
 }
 {
     if (($#)); then
