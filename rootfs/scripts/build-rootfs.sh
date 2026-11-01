@@ -170,7 +170,7 @@ fi
 # tsv-idle-screen has no [Install]: udev starts it when fb0 appears. With the
 # voice assistant enabled (display-manager.service alias) and its 91 udev rule,
 # it is not started at all; it stays installed as the fallback.
-in_root "systemctl enable sshd NetworkManager systemd-timesyncd tsv-usb-gadget tsv-usb-dhcp tsv-growroot tsv-pacman-keyring $ADB_UNITS $VOICE_UNITS"
+in_root "systemctl enable sshd NetworkManager systemd-timesyncd tsv-usb-gadget tsv-usb-dhcp tsv-growroot tsv-pacman-keyring tsv-zram $ADB_UNITS $VOICE_UNITS"
 in_root "systemctl disable systemd-networkd systemd-networkd.socket >/dev/null 2>&1 || true"
 in_root "systemctl mask NetworkManager-wait-online.service systemd-networkd-wait-online.service"
 

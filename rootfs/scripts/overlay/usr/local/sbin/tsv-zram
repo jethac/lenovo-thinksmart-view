@@ -1,0 +1,27 @@
+#!/bin/sh
+# Compressed swap in RAM. The voice stack keeps large file-backed models (the
+# ASR model is mapped and must stay resident) next to anonymous memory that is
+# idle most of the time (synthesis arenas, buffers between replies). zram lets
+# that idle anonymous memory compress instead of the kernel dropping model
+# pages that would have to be read back from eMMC.
+#   tsv-zram start|stop
+set -eu
+SIZE=${TSV_ZRAM_SIZE:-768M}   # uncompressed capacity; zstd typically stores it in a third
+DEV=/dev/zram0
+case "${1:-start}" in
+start)
+    modprobe zram num_devices=1
+    if ! grep -q "^$DEV " /proc/swaps; then
+        echo zstd > /sys/block/zram0/comp_algorithm
+        echo "$SIZE" > /sys/block/zram0/disksize
+        mkswap -q "$DEV"
+        swapon -p 100 "$DEV"
+    fi
+    echo "tsv-zram: $(grep "^$DEV " /proc/swaps | awk '{print $3/1024 " MiB, priority " $5}')"
+    ;;
+stop)
+    swapoff "$DEV" 2>/dev/null || true
+    echo 1 > /sys/block/zram0/reset 2>/dev/null || true
+    ;;
+*) echo "usage: $0 start|stop" >&2; exit 2 ;;
+esac

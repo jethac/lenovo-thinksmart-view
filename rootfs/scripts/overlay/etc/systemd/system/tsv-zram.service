@@ -1,0 +1,14 @@
+[Unit]
+Description=Compressed swap in RAM (zram, zstd)
+DefaultDependencies=no
+Before=swap.target straylight-listen.service
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/tsv-zram start
+ExecStop=/usr/local/sbin/tsv-zram stop
+
+[Install]
+WantedBy=swap.target
