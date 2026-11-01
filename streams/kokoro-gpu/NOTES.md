@@ -98,4 +98,4 @@ Nothing: the test binary (`/var/tmp/gpu-root/sg-bench`) and the shader cache (`/
 | `scripts/device-disasm.sh ARGS` | ir3 statistics of the kernels |
 | `scripts/onnx-survey.py`, `scripts/onnx-msource.py` | graph inspection |
 
-Results: `results/bench-*.log`.
+Logs: `results/bench-*.log` (kept locally; `results/` is not tracked).
