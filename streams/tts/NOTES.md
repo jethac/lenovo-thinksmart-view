@@ -285,11 +285,26 @@ Full cycle, wake, captions, reply spoken, idle, for en, ja and zh in turn (`scri
 
 ## For the image (`rootfs/scripts/`, not changed here)
 
-1. Build: `listen/tts/build.sh aarch64` (clones `git@github.com:r9y9/open_jtalk.git` at `1e52154e` into straylight-voice `downloads/`), `listen/tts/stage.sh` (needs `KOKORO_ONNX_DIR` = onnx-community/Kokoro-82M-v1.0-ONNX at `1939ad2a`, a `PYTHON` with onnx, misaki[en,ja,zh] 0.9.4, g2p_en, pypinyin for the table export, and `ORT_LIB` = sherpa-onnx v2.0.1 linux-aarch64's `libonnxruntime.so`, ONNX Runtime 1.28.2), then `scripts/build-aarch64.sh --release --manifest-path listen/Cargo.toml --features asr,tts`.
-2. Overlay, in addition to the voice-pipeline list: `usr/local/lib/straylight-listen/libonnxruntime.so` (35 MB); `usr/local/share/straylight-listen/kokoro-v1.0-uint8.onnx` (170 MB), `voices/` (af_*, jf_*, zf_*: 9.5 MB), `tts/` (en-us.lex, en-extra.lex, g2p-en.bin, zh-*.tsv, ja-words.txt, lexicon.tsv, open_jtalk_dic/ with its COPYING: 81 MB); the new `etc/systemd/system/straylight-listen.service` (MemoryMax 1600M, MemoryLow 1500M) and `etc/straylight-listen.conf`. Checksums: `out/listen/tts-share/SHA256SUMS`. +296 MB on root.
+Updated 2026-11-01 for the real-time voices (see [Real-time synthesis](#real-time-synthesis-matcha-tts-and-piper)).
+
+1. Build: `listen/tts/build.sh aarch64` (clones `git@github.com:r9y9/open_jtalk.git` at `1e52154e` into straylight-voice `downloads/`), `listen/tts/stage.sh`, then `scripts/build-aarch64.sh --release --manifest-path listen/Cargo.toml --features asr,tts`. `stage.sh` needs:
+   - `KOKORO_ONNX_DIR` = onnx-community/Kokoro-82M-v1.0-ONNX at `1939ad2a`;
+   - `PYTHON` with onnx, misaki[en,ja,zh] 0.9.4, g2p_en, pypinyin (table export, durations outputs);
+   - `ORT_LIB` = sherpa-onnx v2.0.1 linux-aarch64's `libonnxruntime.so` (ONNX Runtime 1.28.2);
+   - `MATCHA_DIR` = sherpa-onnx `tts-models/matcha-icefall-en_US-ljspeech` (model-steps-3.onnx, tokens.txt), `VOCOS` = sherpa-onnx `vocoder-models/vocos-22khz-univ.onnx`;
+   - `ORT_PYTHON` = a Python with onnxruntime 1.28.0 and onnx (writes the `.ort` files the runtime memory-maps; they must come from the runtime's version);
+   - not for the image: `PIPER_VOICES` (the Mandarin Piper voice is not cleared for shipping, see the licence notes below).
+2. Overlay, in addition to the voice-pipeline list:
+   - `usr/local/lib/straylight-listen/libonnxruntime.so` (35 MB);
+   - `usr/local/share/straylight-listen/matcha/ljspeech/` (model.onnx 74 MB, model.ort 64 MB, vocos.onnx 54 MB, vocos.ort 54 MB, tokens.txt): the English voice;
+   - `usr/local/share/straylight-listen/kokoro-v1.0-uint8.onnx` (170 MB) and `kokoro-v1.0-uint8.ort` (170 MB), `voices/` (af_*, jf_*, zf_*: 9.5 MB): Japanese and Mandarin (Kokoro stays selectable for every language);
+   - `usr/local/share/straylight-listen/tts/` (en-us.lex, en-extra.lex, g2p-en.bin, zh-*.tsv, ja-words.txt, lexicon.tsv, open_jtalk_dic/ with its COPYING: 81 MB);
+   - `etc/systemd/system/straylight-listen.service` (unchanged: MemoryMax 1600M, MemoryLow 1500M) and `etc/straylight-listen.conf` (new speech section).
+   
+   Checksums: `out/listen/tts-share/SHA256SUMS`. About +700 MB on root (was +296 MB). The `.onnx` files are kept next to the `.ort` files for `--tts-memory none` and as the source; dropping the four `.onnx` (Kokoro, Matcha, Vocos) saves 300 MB if the default memory setting is kept.
 3. Optional: `etc/straylight-listen.d/lexicon.tsv` for local pronunciations.
 4. No new packages (alsa-lib is already needed; ONNX Runtime is the shipped .so; no espeak-ng).
-5. `/var/lib/straylight-listen/tts-cache/` is made by the service (its state directory).
+5. `/var/lib/straylight-listen/tts-cache/` is made by the service (its state directory). Its keys change with the engine, so the cached fixed lines are made again once after the update.
 
 ## Licences
 
@@ -322,3 +337,134 @@ Downloads (`downloads/`, git-ignored): `kokoro/` (both Hugging Face repos at the
 ## Left on the device (Kokoro)
 
 The installed listener with speech (above), enabled and running; `/usr/local/lib/straylight-listen/libonnxruntime.so`; Kokoro, voices and `tts/` under `/usr/local/share/straylight-listen/`; `/var/lib/straylight-listen/tts-cache/` (20 fixed-line pieces); the unit with MemoryMax 1600M / MemoryLow 1500M. The test payloads (`/var/tmp/kokoro`, `/var/tmp/kokoro-e2e`) were removed; the speaker amp is at the user's 207.
+
+# Real-time synthesis: Matcha-TTS and Piper
+
+Kokoro speaks clause by clause on this CPU (RTF 2.9-3.0), which the user found bad. This section surveys and measures lighter models, and integrates the ones that keep up. **Result: English is now continuous (Matcha-TTS + Vocos, RTF 0.41-0.50), and Mandarin is continuous with a Piper voice (RTF 0.42-0.47). That voice has a licence problem in its ancestry, so it is installed on this tablet for audition only, and the packaged default stays Kokoro. No Japanese model meets the brief:** none that is cleared for commercial use runs in real time here. Japanese stays on Kokoro (RTF 3.1).
+
+Measured 2026-11-01 on the baseline kernel, 6 threads at nice 5, with straylight-listen running.
+
+## Survey (late October 2026)
+
+The vocoder sets the cost. Kokoro's iSTFTNet needs about 48 GFLOP per second of audio; MeloTTS and Piper's "high" voices use HiFi-GAN V1 (512 channels; MeloTTS at 44.1 kHz with an extra stage), about 50-55 GFLOP. Piper "medium" (HiFi-GAN with resblock 2, 256 channels) needs about 4 GFLOP, and Vocos (ConvNeXt on frames, then an inverse STFT) about 2. Candidates:
+
+| Model | Languages | Architecture | Licence (code / weights / data) | Verdict |
+| --- | --- | --- | --- | --- |
+| Matcha-TTS (icefall) + Vocos | en (LJSpeech); zh Baker (NC), zh-en (data not stated) | flow matching, 3 steps; Vocos 22 kHz | MIT, Apache-2.0 / Apache-2.0 / LJ Speech PD; Vocos data LibriTTS-R, LJ, Catalan CC BY-SA | **English winner** |
+| Piper (VITS medium) | en: kristin, ljspeech (from scratch, PD data); most other en_US voices fine-tuned from lessac (research-only data); ja: hi_fi_captain (CC BY-NC-SA); zh: huayan (unknown data, from lessac), xiao_ya (Baker, NC), chaowen (from xiao_ya); AISHELL-3 community voice (Apache data, from libritts_r ← lessac) | VITS, 22 kHz | MIT (piper1-gpl is GPL-3.0, not used) / per voice | English and Mandarin real time; licence clean only for kristin/ljspeech |
+| Supertonic 3 (Supertone, 2026-04) | 31 languages incl. en, ja; **no zh** | text-to-latent flow matching + latent decoder, 44.1 kHz, raw text | MIT / OpenRAIL-M / not disclosed | not real time here |
+| VOICEVOX CORE 0.17.1 | ja only | duration + intonation predictors, decoder at 24 kHz; own ONNX Runtime build, encrypted models | MIT core; ORT build and models under VOICEVOX terms (commercial OK with credit) | best accent, not real time here |
+| MeloTTS | en, ja, zh (+es, fr, ko) | Bert-VITS2 style, HiFi-GAN V1 at 44.1 kHz + BERT | MIT / MIT / not disclosed | about as heavy as Kokoro |
+| Kokoro-82M v1.0 | en, ja, zh | StyleTTS2 + iSTFTNet | Apache-2.0 | the baseline |
+| KittenTTS 0.8 (nano/mini) | en only | StyleTTS2-derived | Apache-2.0 | slower than Piper (laptop) |
+| piper-plus (MB-iSTFT-VITS2) | ja/en/zh/es/fr/pt in one model | very light decoder | MIT code; base trained on MOE-Speech (game/anime voices, unclear rights), Tsukuyomi corpus voice | rejected on data |
+| icefall VITS AISHELL-3 | zh, 174 speakers | VITS, **8 kHz** | Apache-2.0 throughout, from scratch | the one clean real-time Mandarin model; low fidelity |
+| MOSS-TTS-Nano, Pocket TTS, ZipVoice, NeuTTS, VibeVoice | | autoregressive / large | | too heavy for this CPU (not measured) |
+
+Japanese corpora checked for a Piper/Matcha voice: JSUT (commercial use needs the authors' permission), JVS (non-commercial), Hi-Fi-CAPTAIN (CC BY-NC-SA), CSS10 (public domain, but only fine-tunes of the MOE-Speech base exist). None is ready to use.
+
+## Measured on the tablet
+
+`scripts/device-rt.sh` (sherpa-onnx v2.0.1's C API through `src/rt-bench.c`; ONNX Runtime 1.28; models in `/dev/shm`) and `src/vv-bench.c` (VOICEVOX C API), each run in a capped scope next to the service. Later rows: `scripts/device-rt-say.sh`, straylight-listen's own `--say-file` with the pacing sink, voices under the installed share. "1 sent." is the calendar line (5-7 s of audio), "3 sent." the 3-sentence reply (9-12 s). First audio for the bench rows means the whole first sentence, without any cutting.
+
+| Model | Lang | RTF 1 sent. | RTF 3 sent. | First audio | Peak RSS | Licence |
+| --- | --- | --- | --- | --- | --- | --- |
+| Piper kristin medium (sherpa) | en | 0.42-0.43 (4 thr: 0.50-0.52) | 0.42-0.43 | 2.2-2.3 s (1 sent.), 0.36-0.40 s (3 sent.) | 283 MiB | clean |
+| Matcha LJSpeech + Vocos (sherpa) | en | 0.39 | 0.42 | 1.55 s, 1.18 s | 235 MiB | clean |
+| Supertonic 3 int8, 3 / 5 steps | en | 1.56 / 2.42 | 1.53 / 2.45 | 10.6 s | 324-348 MiB | OpenRAIL-M, data not disclosed |
+| Supertonic 3 int8, 3 / 5 steps | ja | 1.51 / 2.43 | 1.45 / 2.28 | 10.4 s | 331-344 MiB | |
+| Supertonic 3 fp32, 2 / 3 steps | ja | 1.12 / 1.56 | 1.12 / 1.53 | 7.8 s | 509-515 MiB | |
+| VOICEVOX 冥鳴ひまり, 6 / 4 threads | ja | 2.85 / 3.59 | 2.96 / 3.74 | 17.9 s (1 sent.), 4.4 s (3 sent., per sentence) | 337-345 MiB | VOICEVOX terms |
+| **Matcha + Vocos (straylight-listen)** | en | 0.41-0.44 | 0.45-0.48 | 1.4-1.5 s (paced, whole reply at once) | see memory | clean |
+| **Piper AISHELL-3 SSB0534 (straylight-listen)** | zh | 0.43-0.44 | 0.42-0.44 | 2.0 s (1 sent.), 0.7 s (3 sent.) | see memory | lessac ancestry |
+| Kokoro uint8 (straylight-listen, baseline) | en | 2.95-3.08 | 3.04-3.13 | 9.2-9.6 s | 438-464 MiB | Apache-2.0 |
+| MeloTTS zh_en | | not run: one laptop thread costs 0.80 s per second of audio, 8x Piper's (0.10) and above Kokoro's 0.69 | | | | MIT, data not disclosed |
+| icefall VITS AISHELL-3 | zh | not run: laptop 0.053 per second of audio, about 0.23 here | | | | clean, 8 kHz |
+
+Laptop single-thread cost per second of audio (`scripts/rt-laptop-cost.py`, en 3-sentence line): Matcha 0.094, Piper kristin 0.102, ljspeech 0.107, Supertonic int8 0.195 (3 steps) / 0.292 (5), Kitten nano int8 0.330, mini 0.776, MeloTTS 0.797, Kokoro uint8 0.690. The device's ratio to that is roughly 4.3x (Kokoro), with fp32 models a little better.
+
+Wake detector and capture during the bench and say runs (the service's 10-minute stats): longest block 8.8-16.0 ms, none over 20 ms, backlog at most 2, no xruns. In the live runs below, with the recogniser, ai& and synthesis in one process: one block of 20-29.5 ms per request, no xruns.
+
+### Memory (TTS part of the process; en Matcha and zh Piper resident; device)
+
+| `--tts-memory` | At rest: anon / file | Peak (HWM) | RTF en / zh |
+| --- | --- | --- | --- |
+| none (ORT defaults) | 379 / 21 MiB | 489 MiB | 0.41-0.45 / 0.42-0.43 |
+| mmap (`.ort` memory-mapped, weights used in place) | 214 / 198 | 518 | 0.44-0.48 / 0.44 |
+| mmap,noprepack | 145 / 212 | 450 | 0.48-0.51 / 0.43 |
+| Kokoro alone, none (as installed before) | 342 / 19 | 438 | 2.95-3.04 |
+| Kokoro alone, mmap | 209 / 191 | 464 | 3.08-3.13 |
+| Kokoro alone, mmap,noprepack | 54 / 193 | 341 | 4.13-4.51 |
+
+- The anonymous memory was ONNX Runtime's copy of the initializers plus prepacking's second, reordered copy. The `.ort` format with `session.use_ort_model_bytes_directly` and `..._for_initializers` over a private read-only mmap (`src/tts/ort_session.rs`) turns the first into clean file pages; turning prepacking off removes the second. Prepacking only buys speed for Matcha (10 %) and Kokoro (30-50 %), so the default is `mmap,noprepack,prepack:matcha,prepack:kokoro`.
+- The arena is shrunk after every run, as before. Disabling it (`noarena`) hung on the laptop and was not pursued. The thread pool is per session (one synthesis at a time, 6 threads, not spinning).
+- The service with this default: at rest 1.37 GiB RSS, of which 600 MiB anonymous and 770 MiB file-backed (560 MiB of that is the recogniser's model). After a Japanese reply, with Kokoro loaded, it is 1.39-1.56 GiB for 10 minutes. Over the live runs MemAvailable stayed at 790 MiB or more; it was at least 815 with Kokoro in all three languages. Without TTS the process is at about 940 MiB, so TTS adds about 430 MiB at rest, of which about 220 MiB is anonymous. Kokoro alone added 340 MiB at rest, almost all of it anonymous.
+- ggml instead of ONNX Runtime would save the 35 MB runtime library and use GGUF weights in place (no prepack copies at all). But ggml's convolutions go through im2col (the NanoCodec lesson in the Magpie section), and these models are mostly 1-D convolutions, so it would probably be slower. Not tried.
+
+### Live, through the whole pipeline (`scripts/device-rt-e2e.sh`; the demo requests, real ai& replies; the service stopped for about 2 minutes per run)
+
+| Lang | Synthesiser | Pieces | Audio | RTF | First audio after the reply's first text | Silence between pieces |
+| --- | --- | --- | --- | --- | --- | --- |
+| en | Matcha | 2 | 7.4 s | 0.50 | 2.2 s (first piece 50 characters, no clause mark; Kokoro was loading for the prewarm at the same time) | 0.0 s |
+| zh | Piper AISHELL-3 | 3 | 9.0 s | 0.47 | 1.36 s | 0.0 s |
+| ja | Kokoro (with prepacking) | 2 | 6.9 s | 3.15 | 12.3 s | 5.9 s |
+| ja | Kokoro (no prepacking, first try) | 3 | 10.0 s | 4.65 | 16.2 s | 24.8 s |
+
+English's first audio missed the 1.5 s target, so the splitter's first Latin-script piece is now at most 32 characters (was 44), with later pieces doubling (64, 128, 220) so that each is ready before the previous one ends. See [After the splitter change](#after-the-splitter-change).
+
+## Integration (straylight-voice `listen/src/tts/`, commit `a6c745b`)
+
+- One synthesiser per language, `--tts-voice L=ENGINE:VOICE`: `matcha:ljspeech`, `piper:NAME#SPEAKER`, `kokoro:VOICE` (a bare name means Kokoro, so old configs keep working). `--tts-keep L,L` (default en,zh) sets which load at start; the others load on first use and are dropped after 10 minutes, so Kokoro costs nothing unless Japanese is spoken. Kokoro stays selectable for every language, which is also where the kokoro-gpu backend can slot in.
+- `matcha.rs`: icefall's acoustic model (input `_ ^ _ p1 _ … $ _`, as sherpa-onnx builds it), then Vocos (`mag`, `x`, `y`), then an inverse STFT in Rust (`dsp.rs`: n_fft 1024, hop 256, Hann, centred).
+- `piper.rs`: Piper ONNX voices, espeak-style phonemes (`^ _ p _ … $`) or the pinyin scheme of Piper's Chinese phonemizer (initial or Ø, final, tone, pad). The speaker comes from the voice's json.
+- Front end: the existing misaki port, rewritten into espeak-ng's en-us notation (`g2p/espeak.rs`: A/I/W/Y/O to eɪ/aɪ/aʊ/ɔɪ/oʊ, ʤ/ʧ, T to ɾ, ɜɹ/əɹ/ɔɹ/ɑɹ to ɜː/ɚ/ɔːɹ/ɑːɹ, the length marks on tense vowels). Mandarin uses its pinyin before the IPA step (`Zh::pinyin`); Latin letters inside Mandarin are read as Mandarin letter names. No espeak-ng anywhere.
+- Durations: `scripts/piper-onnx-durations.py` adds the `/Ceil` node's output ("durations") to the Piper and Matcha graphs. Each symbol's frames (256 samples) drive `spoken_chars` as before (English per word, others over the speaking time).
+- Output: a rational Kaiser-sinc resampler (`dsp.rs`, 22.05 to 48 kHz, unity gain, zero phase per piece); Kokoro keeps its 2x polyphase filter.
+- Lexicon: the shipped English brand pronunciation is now h5, `ˌAˌIˈæːnd` (the espeak voices get `ˌeɪˌaɪˈæːnd`). ASR round trip: "AI End" (Kokoro, Piper kristin) and "AIAN" (Matcha), CER 4.9-7.3 % on the brand line. ja エーアイアンド and zh 诶爱安德 are unchanged; zh Straylight is 斯特雷莱特 (new).
+- Stop/cancel uses the same run-options terminate flag for every engine. Laptop measurement: stream closed 3.2-10.9 ms after the stop.
+- The fixed-line cache key now includes the engine and voice.
+
+## Options not taken (effort estimates)
+
+- **Kokoro's acoustic model with a new, light vocoder.** No ready-made one exists: Kokoro's decoder takes its own aligned text features plus F0 and energy curves, not a mel spectrogram, so no Vocos or HiFi-GAN checkpoint fits. Distilling a Vocos/iSTFT-class decoder means generating 20-50 h of Kokoro intermediates and audio (a GPU, a few hours), then training 1-2 days on a 24 GB GPU (the laptop's 4 GB is too small), plus about a week of engineering and checks. It would keep Kokoro's voices and blends in all three languages, Japanese included, at an estimated RTF of about 0.3. **This is the route to one voice family that is real time.**
+- **Voices distilled from Kokoro** (Matcha or Piper trained on Kokoro's own output, which Apache-2.0 allows): 10-20 h per language, 1-2 days of training per language on a 24 GB GPU. That would give a clean, real-time Japanese voice and a Mandarin Piper voice without the lessac ancestry. Its prosody would be at best Kokoro's.
+- **A Mandarin Piper voice from scratch on AISHELL-3**, or warm-started from the public-domain kristin/ljspeech checkpoints if they can be had: 2-4 GPU-days. That would clean up the zh licence chain.
+- **VOICEVOX in streaming mode** (`create_audio_feature` + `render` slices) would shorten first audio, but at RTF 3 the gaps stay.
+
+## Scripts (real-time synthesis)
+
+| Script | What |
+| --- | --- |
+| `scripts/rt-laptop-cost.py` | one-thread laptop cost of every candidate (ranking before device runs) |
+| `src/rt-bench.c`, `scripts/device-rt.sh base\|model\|run\|clean` | sherpa-onnx C API bench (Piper, Matcha, Kitten, Supertonic, lexicon VITS) on the tablet, locked, capped, detached |
+| `src/vv-bench.c` | VOICEVOX CORE C API bench (per sentence: analysis, then synthesis) |
+| `scripts/rt-espeak-lexicon.py` | per-word espeak lexicon for sherpa's CLI (abandoned: sherpa 2.x's lexicon path garbles Piper input) |
+| `scripts/rt-render.py`, `scripts/rt-render-melo.py` | laptop renders for the samples (Piper/Matcha from our front end's symbols, Supertonic, sherpa VITS, VOICEVOX; MeloTTS) |
+| `scripts/rt-asr.py` | ASR round trip and median F0 of sample folders |
+| `scripts/rt-accent.py`, `cases/ja-accent.tsv` | Japanese pitch-accent minimal pairs |
+| `scripts/device-rt-say.sh push\|run\|stats` | straylight-listen `--say-file` on the tablet next to the service, and the service's stats lines |
+| `scripts/device-rt-e2e.sh TAG WAV...` | the whole pipeline with live ai& replies (as `device-kokoro-e2e.sh`) |
+| `cases/rt-lines.tsv` | the sample lines (Kokoro's plus the brand line) |
+| straylight-voice `listen/scripts/piper-onnx-durations.py` | durations output for Piper and Matcha graphs |
+
+Samples: `work/rt-samples/<model>/<voice>-<lang>-<line>.wav`, with `INDEX.md` (fit, licence, ASR, accent, VOICEVOX terms). Downloads (`downloads/rt/`, git-ignored, sha256 in `downloads/rt/SHA256SUMS.sherpa`, `downloads/rt/voicevox/SHA256SUMS`, Piper voices from `rhasspy/piper-voices` at the revision in `downloads/rt/piper/REVISION`, the AISHELL-3 voice at `be77d1b1`, Supertonic 3 at `3cadd1ee`): sherpa-onnx model packages, Piper voices, VOICEVOX 0.17.1, Supertonic 3, MeloTTS (`rt/melo-src`, `melo-venv`), `rt-venv` (sherpa-onnx 2.0.1, onnxruntime, phonemizer + espeakng-loader, used only on the laptop for the cost ranking), `ort128-venv` (onnxruntime 1.28.0 for `.ort` conversion).
+
+## Left on the device (real-time synthesis)
+
+- straylight-listen as built from this work, enabled and running.
+- In `/usr/local/share/straylight-listen/`: `matcha/ljspeech/`, `piper/zh_CN-cn_aishell3-medium.{onnx,onnx.json,ort}`, `kokoro-v1.0-uint8.ort`, and the new `tts/lexicon.tsv`.
+- `/etc/straylight-listen.conf` has `--tts-voice zh=piper:zh_CN-cn_aishell3-medium#SSB0534`, for audition (interim: remove it to go back to Kokoro for Mandarin).
+- Test payloads (`/var/tmp/rt`, `/dev/shm/rt`, `/var/tmp/rt-e2e`) removed; the Piper kristin test voice removed from the share.
+
+### After the splitter change
+
+`scripts/device-rt-say.sh` with the committed build (`a6c745b`), English, paced, the whole reply given at once, the service running:
+
+| Line | Pieces | Audio | RTF | First audio | Silence between pieces |
+| --- | --- | --- | --- | --- | --- |
+| the live reply's text ("I don't have live weather data and I can't access the internet, …"; 2 sentences) | 4 | 11.6 s | 0.47 | 1.47 s (was 2.2 s live) | 0.00 s |
+| en-cal (1 sentence) | 3 | 7.2 s | 0.47 | 1.14 s | 0.00 s |
+| en-3 (3 sentences) | 5 | 11.0 s | 0.48 | 0.61 s | 0.18 s |
+| en-brand | 2 | 4.5 s | 0.47 | 0.88 s | 0.00 s |
+
+The same binary was then installed and the service restarted (speech ready 35 s after the restart; MemAvailable 1004 MiB at rest).
