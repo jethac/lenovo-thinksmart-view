@@ -1,0 +1,35 @@
+From 6f489c6d463ead020985258a34f56dd09ceec516 Mon Sep 17 00:00:00 2001
+From: Jetha Chan <jethachan@gmail.com>
+Date: Sun, 1 Nov 2026 08:57:45 +0900
+Subject: [PATCH 2/7] mesa: add EXT_shader_16bit_storage to the extension table
+
+GL_EXT_shader_16bit_storage applies to GLSL 1.40+ and ESSL 3.10+.
+---
+ src/mesa/main/consts_exts.h      | 1 +
+ src/mesa/main/extensions_table.h | 1 +
+ 2 files changed, 2 insertions(+)
+
+diff --git a/src/mesa/main/consts_exts.h b/src/mesa/main/consts_exts.h
+index b25923e..6ebf297 100644
+--- a/src/mesa/main/consts_exts.h
++++ b/src/mesa/main/consts_exts.h
+@@ -185,6 +185,7 @@ struct gl_extensions
+    GLboolean EXT_semaphore;
+    GLboolean EXT_semaphore_fd;
+    GLboolean EXT_semaphore_win32;
++   GLboolean EXT_shader_16bit_storage;
+    GLboolean EXT_shader_image_load_formatted;
+    GLboolean EXT_shader_image_load_store;
+    GLboolean EXT_shader_integer_mix;
+diff --git a/src/mesa/main/extensions_table.h b/src/mesa/main/extensions_table.h
+index ecfc6cd..4e2e7d0 100644
+--- a/src/mesa/main/extensions_table.h
++++ b/src/mesa/main/extensions_table.h
+@@ -296,6 +296,7 @@ EXT(EXT_semaphore_fd                        , EXT_semaphore_fd
+ EXT(EXT_semaphore_win32                     , EXT_semaphore_win32                    , GLL, GLC,  x , ES2, 2017)
+ EXT(EXT_separate_shader_objects             , dummy_true                             ,  x ,  x ,  x , ES2, 2013)
+ EXT(EXT_separate_specular_color             , dummy_true                             , GLL,  x ,  x ,  x , 1997)
++EXT(EXT_shader_16bit_storage                , EXT_shader_16bit_storage               , GLL, GLC,  x ,  31, 2017)
+ EXT(EXT_shader_clock                        , ARB_shader_clock                       , GLL, GLC,  x ,  31, 2025)
+ EXT(EXT_shader_framebuffer_fetch            , EXT_shader_framebuffer_fetch           , GLL, GLC,  x , ES2, 2013)
+ EXT(EXT_shader_framebuffer_fetch_non_coherent, EXT_shader_framebuffer_fetch_non_coherent, GLL, GLC,  x, ES2, 2018)

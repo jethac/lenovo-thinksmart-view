@@ -1,0 +1,44 @@
+From 279dcad2dccac417831ee965eb76a5751f6cbb3f Mon Sep 17 00:00:00 2001
+From: Jetha Chan <jethachan@gmail.com>
+Date: Sun, 1 Nov 2026 08:57:45 +0900
+Subject: [PATCH 6/7] freedreno: expose EXT_shader_16bit_storage on a5xx
+
+ir3 now emits 16-bit ldgb/stgb on a5xx, and 16-bit UBO loads are lowered
+to 32-bit ones.  a6xx would need separate 16-bit SSBO descriptors, as
+turnip uses for VK_KHR_16bit_storage, so leave it off there for now.
+
+With f16vec4 inputs in SSBOs and mediump math, the inner loop of a
+compute GEMM is ldgb.u16 -> stl.u16 -> ldl.u16 -> mad.f16 with no
+conversions, instead of a cov.f32f16 per loaded component.
+---
+ docs/features.txt                                | 1 +
+ src/gallium/drivers/freedreno/freedreno_screen.c | 4 ++++
+ 2 files changed, 5 insertions(+)
+
+diff --git a/docs/features.txt b/docs/features.txt
+index ada13f6..ea587dc 100644
+--- a/docs/features.txt
++++ b/docs/features.txt
+@@ -335,6 +335,7 @@ Khronos, ARB, and OES extensions that are not part of any OpenGL or OpenGL ES ve
+   GL_EXT_semaphore                                      DONE (radeonsi, zink, d3d12, iris, crocus)
+   GL_EXT_semaphore_fd                                   DONE (radeonsi, zink, iris, crocus)
+   GL_EXT_semaphore_win32                                DONE (zink, d3d12)
++  GL_EXT_shader_16bit_storage                           DONE (freedreno/a5xx)
+   GL_EXT_shader_clock                                   DONE (all drivers that support GL_ARB_shader_clock)
+   GL_EXT_shader_group_vote                              DONE (all drivers that support GL_ARB_shader_group_vote)
+   GL_EXT_shader_pixel_local_storage                     DONE (panfrost/v6+)
+diff --git a/src/gallium/drivers/freedreno/freedreno_screen.c b/src/gallium/drivers/freedreno/freedreno_screen.c
+index e33674e..03844d3 100644
+--- a/src/gallium/drivers/freedreno/freedreno_screen.c
++++ b/src/gallium/drivers/freedreno/freedreno_screen.c
+@@ -632,6 +632,10 @@ fd_init_screen_caps(struct fd_screen *screen)
+    caps->texture_query_samples =
+    caps->fs_fine_derivative = is_ir3(screen);
+    caps->shader_group_vote = is_a6xx(screen);
++   /* a5xx ldgb/stgb do 16-bit SSBO access directly (16-bit UBO loads are
++    * lowered to 32-bit ones).  a6xx would need 16-bit SSBO descriptors.
++    */
++   caps->shader_16bit_storage = is_a5xx(screen);
+    caps->fs_face_is_integer_sysval = true;
+    caps->fs_point_is_sysval = is_a2xx(screen);
+    /* TODO this is correct for a702 but otherwise I think it should be 2x this: */

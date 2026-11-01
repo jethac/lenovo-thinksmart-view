@@ -1,0 +1,317 @@
+From 441512b99db16110522ef055ffbb4d18226ea115 Mon Sep 17 00:00:00 2001
+From: Jetha Chan <jethachan@gmail.com>
+Date: Sun, 1 Nov 2026 08:57:45 +0900
+Subject: [PATCH 3/7] glsl: implement EXT_shader_16bit_storage
+
+EXT_shader_16bit_storage adds float16_t, int16_t, uint16_t and their
+2- to 4-component vectors for uniform and buffer storage.  Values can be
+loaded, stored to buffers and converted to and from the 32-bit types
+with constructors; other uses are not allowed.
+
+- Enable the float16 scalar and vector type names (already there for
+  AMD_gpu_shader_half_float) and add the int16 and uint16 ones.
+- Add constructor conversions between int16_t/uint16_t and int/uint, and
+  reject 16-bit constructor conversions the extension does not allow
+  (AMD_gpu_shader_half_float keeps allowing any float16 conversion).
+- Reject variable declarations outside uniform and buffer blocks, and
+  arithmetic and relational operators, on these types unless
+  AMD_gpu_shader_half_float makes float16_t a full type.
+
+Buffer layout and lowering to 16-bit load/store intrinsics already work
+for 16-bit types.
+
+Not enforced yet: the rules against swizzles and vector array
+subscripting of 16-bit vectors, and default-block uniforms of structure
+type with 16-bit members are rejected rather than allowed.
+---
+ src/compiler/glsl/ast_function.cpp       | 86 ++++++++++++++++++++++++
+ src/compiler/glsl/ast_to_hir.cpp         | 65 ++++++++++++++++++
+ src/compiler/glsl/glsl_lexer.ll          | 18 +++--
+ src/compiler/glsl/glsl_parser_extras.cpp |  1 +
+ src/compiler/glsl/glsl_parser_extras.h   |  2 +
+ 5 files changed, 168 insertions(+), 4 deletions(-)
+
+diff --git a/src/compiler/glsl/ast_function.cpp b/src/compiler/glsl/ast_function.cpp
+index cf28676..e7503c7 100644
+--- a/src/compiler/glsl/ast_function.cpp
++++ b/src/compiler/glsl/ast_function.cpp
+@@ -891,6 +891,14 @@ no_matching_function_error(const char *name,
+  * This implements the rules in the "Conversion and Scalar Constructors"
+  * section (GLSL 1.10 section 5.4.1), not the "Implicit Conversions" rules.
+  */
++/* The type of \c src with its base type replaced by \c base_type. */
++static const glsl_type *
++convert_type(enum glsl_base_type base_type, const ir_rvalue *src)
++{
++   return glsl_simple_type(base_type, src->type->vector_elements,
++                           src->type->matrix_columns);
++}
++
+ static ir_rvalue *
+ convert_component(ir_rvalue *src, const glsl_type *desired_type)
+ {
+@@ -940,6 +948,15 @@ convert_component(ir_rvalue *src, const glsl_type *desired_type)
+       case GLSL_TYPE_IMAGE:
+          result = new(linalloc) ir_expression(ir_unop_unpack_image_2x32, src);
+          break;
++      case GLSL_TYPE_UINT16:
++         result = new(linalloc) ir_expression(ir_unop_u2u, desired_type, src, NULL);
++         break;
++      case GLSL_TYPE_INT16:
++         result = new(linalloc) ir_expression(ir_unop_i2u,
++                     new(linalloc) ir_expression(ir_unop_i2i,
++                                                 convert_type(GLSL_TYPE_INT, src),
++                                                 src, NULL));
++         break;
+       }
+       break;
+    case GLSL_TYPE_INT:
+@@ -965,6 +982,37 @@ convert_component(ir_rvalue *src, const glsl_type *desired_type)
+       case GLSL_TYPE_INT64:
+          result = new(linalloc) ir_expression(ir_unop_i642i, src);
+          break;
++      case GLSL_TYPE_INT16:
++         result = new(linalloc) ir_expression(ir_unop_i2i, desired_type, src, NULL);
++         break;
++      case GLSL_TYPE_UINT16:
++         result = new(linalloc) ir_expression(ir_unop_u2i,
++                     new(linalloc) ir_expression(ir_unop_u2u,
++                                                 convert_type(GLSL_TYPE_UINT, src),
++                                                 src, NULL));
++         break;
++      }
++      break;
++   case GLSL_TYPE_INT16:
++      switch (b) {
++      case GLSL_TYPE_INT:
++         result = new(linalloc) ir_expression(ir_unop_i2i, desired_type, src, NULL);
++         break;
++      case GLSL_TYPE_UINT:
++         result = new(linalloc) ir_expression(ir_unop_i2i, desired_type,
++                     new(linalloc) ir_expression(ir_unop_u2i, src), NULL);
++         break;
++      }
++      break;
++   case GLSL_TYPE_UINT16:
++      switch (b) {
++      case GLSL_TYPE_UINT:
++         result = new(linalloc) ir_expression(ir_unop_u2u, desired_type, src, NULL);
++         break;
++      case GLSL_TYPE_INT:
++         result = new(linalloc) ir_expression(ir_unop_u2u, desired_type,
++                     new(linalloc) ir_expression(ir_unop_i2u, src), NULL);
++         break;
+       }
+       break;
+    case GLSL_TYPE_FLOAT16:
+@@ -2160,6 +2208,37 @@ static inline bool is_valid_constructor(const glsl_type *type,
+           (state->has_bindless() && (glsl_type_is_sampler(type) || glsl_type_is_image(type)));
+ }
+ 
++/**
++ * EXT_shader_16bit_storage only allows constructors that convert 16-bit
++ * types to and from 32-bit ones: float16_t <-> float and int16_t, uint16_t
++ * <-> int, uint.  AMD_gpu_shader_half_float allows any conversion to and
++ * from float16_t.
++ */
++static bool
++is_valid_16bit_conversion(const glsl_type *to, const glsl_type *from,
++                          struct _mesa_glsl_parse_state *state)
++{
++   const enum glsl_base_type a = to->base_type, b = from->base_type;
++
++   if (a == b || !(glsl_base_type_bit_size(a) == 16 ||
++                   glsl_base_type_bit_size(b) == 16))
++      return true;
++
++   if (state->AMD_gpu_shader_half_float_enable &&
++       (a == GLSL_TYPE_FLOAT16 || b == GLSL_TYPE_FLOAT16))
++      return true;
++
++   if (a == GLSL_TYPE_FLOAT16 || b == GLSL_TYPE_FLOAT16)
++      return a == GLSL_TYPE_FLOAT || b == GLSL_TYPE_FLOAT;
++
++   const bool a_int = a == GLSL_TYPE_INT || a == GLSL_TYPE_UINT ||
++                      a == GLSL_TYPE_INT16 || a == GLSL_TYPE_UINT16;
++   const bool b_int = b == GLSL_TYPE_INT || b == GLSL_TYPE_UINT ||
++                      b == GLSL_TYPE_INT16 || b == GLSL_TYPE_UINT16;
++   return a_int && b_int &&
++          glsl_base_type_bit_size(a) != glsl_base_type_bit_size(b);
++}
++
+ ir_rvalue *
+ ast_function_expression::hir(ir_exec_list *instructions,
+                              struct _mesa_glsl_parse_state *state)
+@@ -2285,6 +2364,13 @@ ast_function_expression::hir(ir_exec_list *instructions,
+             return ir_rvalue::error_value(state->linalloc);
+          }
+ 
++         if (!is_valid_16bit_conversion(constructor_type, result->type, state)) {
++            _mesa_glsl_error(& loc, state, "cannot construct `%s' from `%s'",
++                             glsl_get_type_name(constructor_type),
++                             glsl_get_type_name(result->type));
++            return ir_rvalue::error_value(state->linalloc);
++         }
++
+          /* Count the number of matrix and nonmatrix parameters.  This
+           * is used below to enforce some of the constructor rules.
+           */
+diff --git a/src/compiler/glsl/ast_to_hir.cpp b/src/compiler/glsl/ast_to_hir.cpp
+index bc46e92..a926ea9 100644
+--- a/src/compiler/glsl/ast_to_hir.cpp
++++ b/src/compiler/glsl/ast_to_hir.cpp
+@@ -364,6 +364,38 @@ apply_implicit_conversion(const glsl_type *to, ir_rvalue * &from,
+ }
+ 
+ 
++/**
++ * Whether \c type is or contains a 16-bit type that the enabled extensions
++ * only allow in uniform and buffer storage: EXT_shader_16bit_storage
++ * types may be loaded, stored and converted to and from 32-bit types, but
++ * not declared as other variables or used in arithmetic.
++ * AMD_gpu_shader_half_float makes float16_t a full arithmetic type.
++ */
++static bool
++is_storage_only_16bit_type(const glsl_type *type,
++                           const struct _mesa_glsl_parse_state *state)
++{
++   type = glsl_without_array(type);
++
++   if (glsl_type_is_struct(type)) {
++      for (unsigned i = 0; i < type->length; i++) {
++         if (is_storage_only_16bit_type(type->fields.structure[i].type, state))
++            return true;
++      }
++      return false;
++   }
++
++   switch (type->base_type) {
++   case GLSL_TYPE_FLOAT16:
++      return !state->AMD_gpu_shader_half_float_enable;
++   case GLSL_TYPE_INT16:
++   case GLSL_TYPE_UINT16:
++      return true;
++   default:
++      return false;
++   }
++}
++
+ static const struct glsl_type *
+ arithmetic_result_type(ir_rvalue * &value_a, ir_rvalue * &value_b,
+                        bool multiply,
+@@ -384,6 +416,13 @@ arithmetic_result_type(ir_rvalue * &value_a, ir_rvalue * &value_b,
+       return &glsl_type_builtin_error;
+    }
+ 
++   if (is_storage_only_16bit_type(type_a, state) ||
++       is_storage_only_16bit_type(type_b, state)) {
++      _mesa_glsl_error(loc, state, "16-bit types must be converted to "
++                       "32-bit types before arithmetic");
++      return &glsl_type_builtin_error;
++   }
++
+ 
+    /*    "If one operand is floating-point based and the other is
+     *    not, then the conversions from Section 4.1.10 "Implicit
+@@ -523,6 +562,12 @@ unary_arithmetic_result_type(const struct glsl_type *type,
+       return &glsl_type_builtin_error;
+    }
+ 
++   if (is_storage_only_16bit_type(type, state)) {
++      _mesa_glsl_error(loc, state, "16-bit types must be converted to "
++                       "32-bit types before arithmetic");
++      return &glsl_type_builtin_error;
++   }
++
+    return type;
+ }
+ 
+@@ -713,6 +758,13 @@ relational_result_type(ir_rvalue * &value_a, ir_rvalue * &value_b,
+       return &glsl_type_builtin_error;
+    }
+ 
++   if (is_storage_only_16bit_type(type_a, state) ||
++       is_storage_only_16bit_type(type_b, state)) {
++      _mesa_glsl_error(loc, state, "16-bit types must be converted to "
++                       "32-bit types before comparison");
++      return &glsl_type_builtin_error;
++   }
++
+    /*    "Either the operands' types must match, or the conversions from
+     *    Section 4.1.10 "Implicit Conversions" will be applied to the integer
+     *    operand, after which the types must match."
+@@ -5365,6 +5417,19 @@ ast_declarator_list::hir(ir_exec_list *instructions,
+                        "interface blocks");
+    }
+ 
++   /* EXT_shader_16bit_storage:
++    *    "...must not be used to declare variables, unless that variable is
++    *    a structure with uniform or buffer storage qualifier."
++    *
++    * Members of uniform and buffer blocks are not declared here.
++    */
++   if (decl_type && !this->declarations.is_empty() &&
++       is_storage_only_16bit_type(decl_type, state)) {
++      _mesa_glsl_error(&loc, state,
++                       "16-bit types can only be used in uniform and buffer "
++                       "blocks");
++   }
++
+    /* Similarly, the EXT_shader_pixel_local_storage spec says:
+     *    "Pixel local storage variables may only be declared inside
+     *     interface blocks..."
+diff --git a/src/compiler/glsl/glsl_lexer.ll b/src/compiler/glsl/glsl_lexer.ll
+index 4bc34f9..6a4fa2d 100644
+--- a/src/compiler/glsl/glsl_lexer.ll
++++ b/src/compiler/glsl/glsl_lexer.ll
+@@ -768,11 +768,21 @@ u64vec2		TYPE_WITH_ALT(0, 0, 0, 0, yyextra->ARB_gpu_shader_int64_enable || yyext
+ u64vec3		TYPE_WITH_ALT(0, 0, 0, 0, yyextra->ARB_gpu_shader_int64_enable || yyextra->AMD_gpu_shader_int64_enable, &glsl_type_builtin_u64vec3);
+ u64vec4		TYPE_WITH_ALT(0, 0, 0, 0, yyextra->ARB_gpu_shader_int64_enable || yyextra->AMD_gpu_shader_int64_enable, &glsl_type_builtin_u64vec4);
+ 
++    /* Additional words for EXT_shader_16bit_storage */
++int16_t		TYPE_WITH_ALT(0, 0, 0, 0, yyextra->EXT_shader_16bit_storage_enable, &glsl_type_builtin_int16_t);
++i16vec2		TYPE_WITH_ALT(0, 0, 0, 0, yyextra->EXT_shader_16bit_storage_enable, &glsl_type_builtin_i16vec2);
++i16vec3		TYPE_WITH_ALT(0, 0, 0, 0, yyextra->EXT_shader_16bit_storage_enable, &glsl_type_builtin_i16vec3);
++i16vec4		TYPE_WITH_ALT(0, 0, 0, 0, yyextra->EXT_shader_16bit_storage_enable, &glsl_type_builtin_i16vec4);
++uint16_t	TYPE_WITH_ALT(0, 0, 0, 0, yyextra->EXT_shader_16bit_storage_enable, &glsl_type_builtin_uint16_t);
++u16vec2		TYPE_WITH_ALT(0, 0, 0, 0, yyextra->EXT_shader_16bit_storage_enable, &glsl_type_builtin_u16vec2);
++u16vec3		TYPE_WITH_ALT(0, 0, 0, 0, yyextra->EXT_shader_16bit_storage_enable, &glsl_type_builtin_u16vec3);
++u16vec4		TYPE_WITH_ALT(0, 0, 0, 0, yyextra->EXT_shader_16bit_storage_enable, &glsl_type_builtin_u16vec4);
++
+     /* Additional words for AMD_gpu_shader_half_float */
+-float16_t	TYPE_WITH_ALT(0, 0, 0, 0, yyextra->AMD_gpu_shader_half_float_enable, &glsl_type_builtin_float16_t);
+-f16vec2		TYPE_WITH_ALT(0, 0, 0, 0, yyextra->AMD_gpu_shader_half_float_enable, &glsl_type_builtin_f16vec2);
+-f16vec3		TYPE_WITH_ALT(0, 0, 0, 0, yyextra->AMD_gpu_shader_half_float_enable, &glsl_type_builtin_f16vec3);
+-f16vec4		TYPE_WITH_ALT(0, 0, 0, 0, yyextra->AMD_gpu_shader_half_float_enable, &glsl_type_builtin_f16vec4);
++float16_t	TYPE_WITH_ALT(0, 0, 0, 0, yyextra->AMD_gpu_shader_half_float_enable || yyextra->EXT_shader_16bit_storage_enable, &glsl_type_builtin_float16_t);
++f16vec2		TYPE_WITH_ALT(0, 0, 0, 0, yyextra->AMD_gpu_shader_half_float_enable || yyextra->EXT_shader_16bit_storage_enable, &glsl_type_builtin_f16vec2);
++f16vec3		TYPE_WITH_ALT(0, 0, 0, 0, yyextra->AMD_gpu_shader_half_float_enable || yyextra->EXT_shader_16bit_storage_enable, &glsl_type_builtin_f16vec3);
++f16vec4		TYPE_WITH_ALT(0, 0, 0, 0, yyextra->AMD_gpu_shader_half_float_enable || yyextra->EXT_shader_16bit_storage_enable, &glsl_type_builtin_f16vec4);
+ f16mat2		TYPE_WITH_ALT(0, 0, 0, 0, yyextra->AMD_gpu_shader_half_float_enable, &glsl_type_builtin_f16mat2);
+ f16mat3		TYPE_WITH_ALT(0, 0, 0, 0, yyextra->AMD_gpu_shader_half_float_enable, &glsl_type_builtin_f16mat3);
+ f16mat4		TYPE_WITH_ALT(0, 0, 0, 0, yyextra->AMD_gpu_shader_half_float_enable, &glsl_type_builtin_f16mat4);
+diff --git a/src/compiler/glsl/glsl_parser_extras.cpp b/src/compiler/glsl/glsl_parser_extras.cpp
+index 2339818..4a45fda 100644
+--- a/src/compiler/glsl/glsl_parser_extras.cpp
++++ b/src/compiler/glsl/glsl_parser_extras.cpp
+@@ -833,6 +833,7 @@ static const _mesa_glsl_extension _mesa_glsl_supported_extensions[] = {
+    EXT(EXT_mesh_shader),
+    EXT_AEP(EXT_primitive_bounding_box),
+    EXT(EXT_separate_shader_objects),
++   EXT(EXT_shader_16bit_storage),
+    EXT(EXT_shader_clock),
+    EXT(EXT_shader_framebuffer_fetch),
+    EXT(EXT_shader_framebuffer_fetch_non_coherent),
+diff --git a/src/compiler/glsl/glsl_parser_extras.h b/src/compiler/glsl/glsl_parser_extras.h
+index b57bd7b..5b51b2c 100644
+--- a/src/compiler/glsl/glsl_parser_extras.h
++++ b/src/compiler/glsl/glsl_parser_extras.h
+@@ -897,6 +897,8 @@ struct _mesa_glsl_parse_state {
+    bool EXT_primitive_bounding_box_warn;
+    bool EXT_separate_shader_objects_enable;
+    bool EXT_separate_shader_objects_warn;
++   bool EXT_shader_16bit_storage_enable;
++   bool EXT_shader_16bit_storage_warn;
+    bool EXT_shader_clock_enable;
+    bool EXT_shader_clock_warn;
+    bool EXT_shader_framebuffer_fetch_enable;

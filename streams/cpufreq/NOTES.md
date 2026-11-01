@@ -164,9 +164,9 @@ ended up running it.
 - **Do not read `/sys/bus/nvmem/devices/qfprom0/nvmem` raw.** It reset the
   device (TrustZone-protected rows). Use the exported cells under `cells/`.
 - **`kernel/deploy-to-device.sh --reboot` did not always reboot** (`adb
-  reboot` answered "error: closed", `wait_back` still said "back"). I hit
-  it on my first deploy, noticed it (uptime 47 min), and from then on
-  rebooted with `systemctl reboot` and checked for a new boot_id. The
+  reboot` answered "error: closed", `wait_back` still said "back"). It
+  happened on the first cpufreq deploy (caught by uptime 47 min); from then
+  on reboots used `systemctl reboot` with a check for a new boot_id. The
   integrator has since fixed the script the same way. Every result here is
   tied to its kernel by behaviour only that kernel has: baseline = two OPP
   errors and 80/100 trips; patched = neither log line and 75/85/100 trips
@@ -181,19 +181,20 @@ ended up running it.
 
 ## Incident 2026-10-30: other streams ran on the cpufreq test kernel
 
-1. Under the lock, I deployed `build-cpufreq` with the 50/56 C test DTB and
-   rebooted it (verified by boot_id), then ran the throttle soak.
-2. Between my reboot and the soak, the wifi stream deployed `build-wifi`
+1. Under the lock, `build-cpufreq` was deployed with the 50/56 C test DTB and
+   rebooted (verified by boot_id), then ran the throttle soak.
+2. Between that reboot and the soak, the wifi stream deployed `build-wifi`
    with `--reboot`. The reboot did not happen (the `adb reboot` bug below),
-   so the device kept running my test kernel. /boot then held build-wifi,
-   and `.prev` held my test kernel.
+   so the device kept running the cpufreq test kernel. /boot then held build-wifi,
+   and `.prev` held the cpufreq test kernel.
 3. The ASR bench and the view-hal observations ("trips at 50/56 C,
    capped at 1612.8 MHz idle") ran on that test kernel, so their CPU
    numbers are throttled and should be rerun on the baseline.
-4. A queued `deploy-to-device.sh --rollback --reboot` from another session
+4. A queued `deploy-to-device.sh --rollback --reboot` from another stream
    would have restored `.prev`, which is the test kernel, not the baseline.
-   I queued a locked job that deploys `build-7.3`, reboots, and checks
-   the md5s and trips instead (see final state below).
+   A locked job that deploys `build-7.3`, reboots, and checks
+   the md5s and trips was queued instead; the baseline was restored
+   before it ran, so it was withdrawn (see below).
 
 ## For the integrator
 
@@ -218,7 +219,7 @@ ended up running it.
 
 Nothing. At release the device runs the baseline (`uname -v` 10:12 build;
 Image and DTB md5 equal to `kernel/build-7.3`; trips 80/100; no `.prev`
-files). The restore itself was done from the coordinator's side; I
-withdrew my queued restore so the device would not reboot again needlessly.
+files). The restore was done by the integrator; the queued cpufreq
+restore was withdrawn so the device would not reboot again needlessly.
 `/tmp/measure.sh` is gone (tmpfs). `results/` holds the logs;
 `measure.sh` is the script (pushed to /tmp on the device to run).

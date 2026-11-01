@@ -1,0 +1,5 @@
+#version 310 es
+layout(local_size_x = 8) in;
+layout(std430, binding = 0) readonly buffer I { uint a[]; };
+layout(std430, binding = 1) writeonly buffer O { uint b[]; };
+void main() { uint i = gl_LocalInvocationID.x; b[i] = a[i] ^ 0x00010001u; }

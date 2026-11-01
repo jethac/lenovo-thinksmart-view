@@ -2,7 +2,7 @@
 
 The Straylight screen gets a settings overlay and the assistant gets real
 replies from ai&. Code: straylight-voice (`github.com/jethac/straylight-voice`,
-commit `34dcb31`). Its README has the design and the protocol; `aiand/README.md`
+commits `34dcb31` and `5fccee4`). Its README has the design and the protocol; `aiand/README.md`
 and `wifi/README.md` cover the two new services; `listen/README.md` covers the
 responder and the sound settings. This file has the findings, the tests, the
 device state and what is left.
@@ -212,12 +212,17 @@ and Wi-Fi":
 3. **Keys and cover.** Watch with
    `adb shell journalctl -fu straylight-voice -u straylight-listen` while the
    user:
-   - presses Volume up and Volume down: a pill at the top shows "Volume −28 dB"
-     and so on with a red bar; at the bottom of the range "Muted";
-     "Volume (max)" at 0 dB; holding repeats; it fades 1.5 s after the last
-     press; the listener logs `audio: speaker ...`;
-   - slides the camera cover closed and open: "Camera off" / "Camera on" with
-     the lens icon; About › Camera cover follows.
+   - presses Volume up and Volume down: a narrow pill appears next to the
+     keys on the left edge (237 px down, 53 px in, 56 px wide, sliding in
+     from the edge). Its bar fills upwards in red and its icon is
+     `volume_up`, `volume_down` or `volume_off` (muted at the bottom of the
+     range). Holding a key repeats, and the pill goes 1.5 s after the last
+     press. The listener logs `audio: speaker ...`. If the pill does not line
+     up with the keys, change `CHARM_TOP_MM` in straylight-voice
+     `src/charms.rs`.
+   - slides the camera cover closed and open: a round pill at the top centre
+     with `no_photography` or `photo_camera`, and About › Camera cover
+     follows.
 
    No hold of Volume down for anything near 10 s: it is the PMIC's reset
    gesture on stock.

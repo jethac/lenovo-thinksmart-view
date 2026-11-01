@@ -50,3 +50,8 @@ streams/*/build/
 # Installer: per-unit backups and logs, scratch and rehearsal
 units/
 install/work/
+
+# per-stream scratch
+streams/**/tmp/
+__pycache__/
+*.pyc

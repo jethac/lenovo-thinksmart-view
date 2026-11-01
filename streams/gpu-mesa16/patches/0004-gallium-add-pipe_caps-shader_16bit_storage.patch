@@ -1,0 +1,39 @@
+From 7b178bbf334910cbfd616466e19ec99c43a1eb3a Mon Sep 17 00:00:00 2001
+From: Jetha Chan <jethachan@gmail.com>
+Date: Sun, 1 Nov 2026 08:57:45 +0900
+Subject: [PATCH 4/7] gallium: add pipe_caps::shader_16bit_storage
+
+For drivers that can do 16-bit loads from uniform and buffer memory and
+16-bit stores to buffer memory, as EXT_shader_16bit_storage needs.
+---
+ docs/gallium/screen.rst              | 3 +++
+ src/gallium/include/pipe/p_defines.h | 2 ++
+ 2 files changed, 5 insertions(+)
+
+diff --git a/docs/gallium/screen.rst b/docs/gallium/screen.rst
+index 303502e..62f8557 100644
+--- a/docs/gallium/screen.rst
++++ b/docs/gallium/screen.rst
+@@ -327,6 +327,9 @@ Capability about the features and limits of the driver/GPU.
+   supported in vertex shaders.
+ * ``pipe_caps.shader_pack_half_float``: Whether packed 16-bit float
+   packing/unpacking opcodes are supported.
++* ``pipe_caps.shader_16bit_storage``: Whether 16-bit loads from uniform and
++  buffer memory and 16-bit stores to buffer memory are supported in all
++  shader stages that support those resources (EXT_shader_16bit_storage).
+ * ``pipe_caps.fs_position_is_sysval``: If gallium frontends should use a
+   system value for the POSITION fragment shader input.
+ * ``pipe_caps.fs_point_is_sysval``: If gallium frontends should use a system
+diff --git a/src/gallium/include/pipe/p_defines.h b/src/gallium/include/pipe/p_defines.h
+index c9929b5..90650ce 100644
+--- a/src/gallium/include/pipe/p_defines.h
++++ b/src/gallium/include/pipe/p_defines.h
+@@ -935,6 +935,8 @@ struct pipe_caps {
+    bool clear_masked;
+    bool draw_parameters;
+    bool shader_pack_half_float;
++   /* 16-bit loads and stores of uniform and buffer memory (EXT_shader_16bit_storage) */
++   bool shader_16bit_storage;
+    bool multi_draw_indirect;
+    bool multi_draw_indirect_params;
+    bool multi_draw_indirect_partial_stride;

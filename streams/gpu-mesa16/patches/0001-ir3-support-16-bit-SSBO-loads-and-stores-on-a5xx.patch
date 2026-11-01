@@ -1,0 +1,86 @@
+From 97252679881b3b34491658e65e76b478a8e46624 Mon Sep 17 00:00:00 2001
+From: Jetha Chan <jethachan@gmail.com>
+Date: Sun, 1 Nov 2026 08:57:44 +0900
+Subject: [PATCH 1/7] ir3: support 16-bit SSBO loads and stores on a5xx
+
+ldgb and stgb were always emitted with a 32-bit type, so a 16-bit
+load_ssbo or store_ssbo would read or write 32 bits.  On a5xx, untyped
+ldgb/stgb with a u16 type do 16-bit accesses to and from half registers,
+for 1 to 4 components.  The address is the 64-bit byte offset source,
+which only needs 2-byte alignment (the element offset source is not
+used), so no change to the offset lowering is needed.  Checked on an
+Adreno 506 with hand-written loads and stores at even and odd 16-bit
+offsets, and at vec2 and vec4 sizes.
+
+Pick the type from the bit size, and validate stgb sources like stib's
+(only the value takes the type's register size).  a4xx is untested, and
+nothing generates 16-bit SSBO access there, so assert gen 5 for 16-bit.
+---
+ src/freedreno/ir3/ir3_a4xx.c     | 22 ++++++++++++++++++++--
+ src/freedreno/ir3/ir3_validate.c |  6 ++++++
+ 2 files changed, 26 insertions(+), 2 deletions(-)
+
+diff --git a/src/freedreno/ir3/ir3_a4xx.c b/src/freedreno/ir3/ir3_a4xx.c
+index 176df6d..40530cf 100644
+--- a/src/freedreno/ir3/ir3_a4xx.c
++++ b/src/freedreno/ir3/ir3_a4xx.c
+@@ -47,6 +47,24 @@ byte_offset_to_address(struct ir3_context *ctx,
+    }
+ }
+ 
++/* On a5xx, untyped ldgb/stgb with a 16-bit type load and store 16-bit
++ * values from and to half registers, 1 to 4 components.  The address is the
++ * 64-bit byte offset source, which only needs 2-byte alignment; the element
++ * offset source is not used by the hardware.  Not checked on a4xx, where
++ * nothing generates 16-bit SSBO access.
++ */
++static type_t
++ssbo_access_type(struct ir3_context *ctx, unsigned bit_size)
++{
++   if (bit_size == 16) {
++      compile_assert(ctx, ctx->compiler->gen == 5);
++      return TYPE_U16;
++   }
++
++   compile_assert(ctx, bit_size == 32);
++   return TYPE_U32;
++}
++
+ /* src[] = { buffer_index, offset }. No const_index */
+ static void
+ emit_intrinsic_load_ssbo(struct ir3_context *ctx, nir_intrinsic_instr *intr,
+@@ -68,7 +86,7 @@ emit_intrinsic_load_ssbo(struct ir3_context *ctx, nir_intrinsic_instr *intr,
+    ldgb->dsts[0]->wrmask = MASK(intr->num_components);
+    ldgb->cat6.iim_val = intr->num_components;
+    ldgb->cat6.d = 4;
+-   ldgb->cat6.type = TYPE_U32;
++   ldgb->cat6.type = ssbo_access_type(ctx, intr->def.bit_size);
+    ldgb->barrier_class = IR3_BARRIER_BUFFER_R;
+    ldgb->barrier_conflict = IR3_BARRIER_BUFFER_W;
+ 
+@@ -101,7 +119,7 @@ emit_intrinsic_store_ssbo(struct ir3_context *ctx, nir_intrinsic_instr *intr)
+    stgb = ir3_STGB(b, ssbo, 0, src0, 0, src1, 0, src2, 0);
+    stgb->cat6.iim_val = ncomp;
+    stgb->cat6.d = 4;
+-   stgb->cat6.type = TYPE_U32;
++   stgb->cat6.type = ssbo_access_type(ctx, intr->src[0].ssa->bit_size);
+    stgb->barrier_class = IR3_BARRIER_BUFFER_W;
+    stgb->barrier_conflict = IR3_BARRIER_BUFFER_R | IR3_BARRIER_BUFFER_W;
+ 
+diff --git a/src/freedreno/ir3/ir3_validate.c b/src/freedreno/ir3/ir3_validate.c
+index 8a29d76..782e6e8 100644
+--- a/src/freedreno/ir3/ir3_validate.c
++++ b/src/freedreno/ir3/ir3_validate.c
+@@ -500,6 +500,12 @@ validate_instr(struct ir3_validate_ctx *ctx, struct ir3_instruction *instr)
+          validate_assert(ctx, !(instr->srcs[1]->flags & IR3_REG_HALF));
+          validate_reg_size(ctx, instr->srcs[3], instr->cat6.type);
+          break;
++      case OPC_STGB:
++         validate_assert(ctx, !(instr->srcs[0]->flags & IR3_REG_HALF));
++         validate_reg_size(ctx, instr->srcs[1], instr->cat6.type);
++         validate_assert(ctx, !(instr->srcs[2]->flags & IR3_REG_HALF));
++         validate_assert(ctx, !(instr->srcs[3]->flags & IR3_REG_HALF));
++         break;
+       case OPC_GETFIBERID:
+       case OPC_GETSPID:
+       case OPC_GETWID:

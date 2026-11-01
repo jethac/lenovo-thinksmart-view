@@ -1,0 +1,195 @@
+From 661dacd1c78664133efd31918dd9105dd4176d4e Mon Sep 17 00:00:00 2001
+From: Jetha Chan <jethachan@gmail.com>
+Date: Sun, 1 Nov 2026 09:35:30 +0900
+Subject: [PATCH 7/7] ir3: count half registers in the a5xx register footprint
+
+On a5xx the half registers are a separate file in the ISA, but they take
+space in the same per-SP register file as the full ones, a half vec4
+costing half a full vec4.  ir3 ignores them there: regs_count (used for
+the double-threadsize choice and max_waves) only counts full registers
+before a6xx, RA lets both files grow to 48 vec4 independently, and
+calc_limit_pressure_for_cs_with_barrier() only limits the merged-register
+case.  Shaders that do not fit then fail silently:
+
+- a compute workgroup with a barrier whose waves cannot all be resident
+  hangs the GPU; hangcheck kills it and the output is never written;
+- a shader whose wave does not fit, e.g. a fragment shader with 48 full
+  and 48 half registers, or 24 full and 35 half at double threadsize,
+  runs and writes nothing (or hangs).
+
+Measured on an Adreno 506 (compute GEMM kernels with shared memory, and
+fragment-shader convolutions), every working case and none of the
+failing ones fit
+
+   threads in flight * (full vec4 + half vec4 / 2) <= 2048
+
+with threads in flight the workgroup (compute with a barrier, rounded up
+to whole waves) or one wave.  For example 128 compute threads run with
+16 full registers and hang with 16 full and 2 half, or with 24 full; 64
+threads run with 24 full and 2 half, and with 6 full and 48 half at
+double threadsize.
+
+- Count half registers at half cost in regs_count on a5xx, as on a6xx,
+  so that double threadsize is only chosen when the doubled wave fits.
+- In RA, split a per-thread budget between the full and half files once
+  the half pressure is known (one wave: 64 vec4; compute with a barrier:
+  2048 / workgroup threads), and keep either file from growing past its
+  share.  Shaders over the budget now spill instead of failing.
+
+dEQP-GLES31.functional.compute.shared_var.work_group_size.mat4_{128_1_1,
+1_128_1,1_1_64} go from hang to pass; a mediump compute GEMM with 128
+threads goes from hang to 13.3 GFLOP/s, and the fragment convolutions
+above go from zero output to correct.
+
+The budget is the A506's; larger a5xx parts may have more, which here
+only costs some spilling.  a4xx is left alone.
+---
+ src/freedreno/ir3/ir3.c    |  2 +-
+ src/freedreno/ir3/ir3_ra.c | 88 ++++++++++++++++++++++++++++++++++++--
+ 2 files changed, 85 insertions(+), 5 deletions(-)
+
+diff --git a/src/freedreno/ir3/ir3.c b/src/freedreno/ir3/ir3.c
+index 46d0ab2..fdf92f4 100644
+--- a/src/freedreno/ir3/ir3.c
++++ b/src/freedreno/ir3/ir3.c
+@@ -588,7 +588,7 @@ ir3_collect_info(struct ir3_shader_variant *v)
+     */
+    unsigned regs_count =
+       info->max_reg + 1 +
+-      (compiler->gen >= 6 ? ((info->max_half_reg + 2) / 2) : 0);
++      (compiler->gen >= 5 ? ((info->max_half_reg + 2) / 2) : 0);
+ 
+    info->double_threadsize = ir3_should_double_threadsize(v, regs_count);
+ 
+diff --git a/src/freedreno/ir3/ir3_ra.c b/src/freedreno/ir3/ir3_ra.c
+index e15a79b..274dbfa 100644
+--- a/src/freedreno/ir3/ir3_ra.c
++++ b/src/freedreno/ir3/ir3_ra.c
+@@ -2721,6 +2721,54 @@ calc_min_limit_pressure(struct ir3_shader_variant *v,
+  * If barriers are used, it must be possible for all waves in the workgroup
+  * to execute concurrently. Thus we may have to reduce the registers limit.
+  */
++/* a5xx has separate half and full register files as far as the ISA goes,
++ * but half registers take space in the same per-SP register file as the
++ * full ones, a half vec4 costing half a full one.  A compute workgroup with
++ * a barrier whose threads do not all fit hangs the GPU (it is killed by
++ * hangcheck and its output is never written); a shader whose single wave
++ * does not fit (e.g. 48 full + 48 half registers) runs and writes nothing.
++ *
++ * Measured on an Adreno 506 with a shared-memory GEMM kernel: 128 threads
++ * run with 16 full vec4 registers, but hang with 16 full + 1 half vec4
++ * (2 half vec4 registers), 6 full + 11 or 24 half-equivalent, and 24 full;
++ * 64 threads run with 24 full + 1, and with 6 full + 24 half-equivalent at
++ * double threadsize.  All of these fit threads * (full + half / 2) <= 2048
++ * vec4.  The budget may be larger on bigger a5xx parts; using the smaller
++ * one there only costs some spilling in large workgroups with barriers.
++ */
++#define A5XX_CS_REG_BUDGET_VEC4 2048
++
++static bool
++is_cs_with_barrier(struct ir3_shader_variant *v)
++{
++   return mesa_shader_stage_is_compute(v->type) &&
++          v->shader->nir->info.uses_control_barrier;
++}
++
++/* Split an a5xx per-thread register budget (in vec4) between the full and
++ * the half register file, given the half pressure, so that
++ * full + half / 2 <= budget.
++ */
++static void
++a5xx_limit_pressure_for_half_regs(const struct ir3_pressure *max_pressure,
++                                  struct ir3_pressure *limit_pressure,
++                                  unsigned budget)
++{
++   unsigned full_cap = limit_pressure->full / (4 * 2);   /* vec4 */
++   unsigned half_cap = limit_pressure->half / 4;         /* half vec4 */
++   unsigned half = DIV_ROUND_UP(max_pressure->half, 4);
++   unsigned full;
++
++   if (DIV_ROUND_UP(half, 2) <= budget / 2)
++      full = MIN2(full_cap, budget - DIV_ROUND_UP(half, 2));
++   else
++      full = MIN2(full_cap, budget / 2);
++   half = MIN2(half_cap, (budget - full) * 2);
++
++   limit_pressure->full = full * 4 * 2;
++   limit_pressure->half = MIN2(limit_pressure->half, half * 4);
++}
++
+ static void
+ calc_limit_pressure_for_cs_with_barrier(struct ir3_shader_variant *v,
+                                         struct ir3_pressure *limit_pressure)
+@@ -2759,8 +2807,20 @@ calc_limit_pressure_for_cs_with_barrier(struct ir3_shader_variant *v,
+ 
+    uint32_t half_regs_per_thread = vec4_regs_per_thread * 4 * 2;
+ 
++   if (compiler->gen == 5) {
++      /* See a5xx_limit_pressure_for_half_regs(); the share of the half
++       * registers is taken off once the half pressure is known.
++       */
++      half_regs_per_thread =
++         A5XX_CS_REG_BUDGET_VEC4 /
++         (DIV_ROUND_UP(threads_per_wg, compiler->info->threadsize_base *
++                                          (double_threadsize ? 2 : 1)) *
++          compiler->info->threadsize_base * (double_threadsize ? 2 : 1)) *
++         4 * 2;
++   }
++
+    if (limit_pressure->full > half_regs_per_thread) {
+-      if (v->mergedregs) {
++      if (v->mergedregs || compiler->gen == 5) {
+          limit_pressure->full = half_regs_per_thread;
+       } else {
+          /* TODO: Handle !mergedregs case, probably we would have to do this
+@@ -2780,8 +2840,7 @@ ir3_ra_get_reg_file_limits(struct ir3_shader_variant *v)
+       .shared_half = RA_SHARED_HALF_SIZE,
+    };
+ 
+-   if (mesa_shader_stage_is_compute(v->type) &&
+-       v->shader->nir->info.uses_control_barrier) {
++   if (is_cs_with_barrier(v)) {
+       calc_limit_pressure_for_cs_with_barrier(v, &limit_pressure);
+    }
+ 
+@@ -2867,6 +2926,21 @@ ir3_ra(struct ir3_shader_variant *v)
+       ir3_debug_print(v->ir, "AFTER: shared register allocation");
+    }
+ 
++   /* a5xx: one thread's full and half registers must fit together (see
++    * A5XX_CS_REG_BUDGET_VEC4); a shader that does not fit even one wave
++    * runs without writing anything.  Compute shaders with a barrier get the
++    * smaller budget that lets the whole workgroup fit.
++    */
++   bool a5xx_limit = v->compiler->gen == 5;
++   if (a5xx_limit) {
++      unsigned budget = is_cs_with_barrier(v)
++                           ? limit_pressure.full / (4 * 2)
++                           : A5XX_CS_REG_BUDGET_VEC4 /
++                                v->compiler->info->threadsize_base;
++      a5xx_limit_pressure_for_half_regs(&max_pressure, &limit_pressure,
++                                        budget);
++   }
++
+    bool spilled = false;
+    if (max_pressure.full > limit_pressure.full ||
+        max_pressure.half > limit_pressure.half) {
+@@ -2895,11 +2969,17 @@ ir3_ra(struct ir3_shader_variant *v)
+ 
+    ctx->full.size = calc_target_full_pressure(v, max_pressure.full);
+    assert(ctx->full.size <= RA_FULL_SIZE);
+-   d("full size: %u", ctx->full.size);
+ 
+    if (!v->mergedregs)
+       ctx->half.size = RA_HALF_SIZE;
+ 
++   /* Do not grow past what lets the whole workgroup fit. */
++   if (a5xx_limit) {
++      ctx->full.size = MIN2(ctx->full.size, limit_pressure.full);
++      ctx->half.size = MIN2(ctx->half.size, limit_pressure.half);
++   }
++   d("full size: %u", ctx->full.size);
++
+    ctx->shared.size = RA_SHARED_SIZE;
+ 
+    ctx->full.start = ctx->half.start = ctx->shared.start = 0;

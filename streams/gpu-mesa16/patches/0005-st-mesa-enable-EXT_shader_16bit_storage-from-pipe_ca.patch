@@ -1,0 +1,22 @@
+From cfc37c59595fadc5a1ea35cfab9b197f8f9928a5 Mon Sep 17 00:00:00 2001
+From: Jetha Chan <jethachan@gmail.com>
+Date: Sun, 1 Nov 2026 08:57:45 +0900
+Subject: [PATCH 5/7] st/mesa: enable EXT_shader_16bit_storage from
+ pipe_caps::shader_16bit_storage
+
+---
+ src/mesa/state_tracker/st_extensions.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/src/mesa/state_tracker/st_extensions.c b/src/mesa/state_tracker/st_extensions.c
+index 577ca92..45b5b30 100644
+--- a/src/mesa/state_tracker/st_extensions.c
++++ b/src/mesa/state_tracker/st_extensions.c
+@@ -1117,6 +1117,7 @@ void st_init_extensions(struct pipe_screen *screen,
+ #else
+    EXT_CAP(EXT_semaphore_win32,              fence_signal);
+ #endif
++   EXT_CAP(EXT_shader_16bit_storage,         shader_16bit_storage);
+    EXT_CAP(EXT_shader_pixel_local_storage,   shader_pixel_local_storage_size);
+    EXT_CAP(EXT_shader_realtime_clock,        shader_realtime_clock);
+    EXT_CAP(EXT_shader_samples_identical,     shader_samples_identical);
