@@ -90,7 +90,7 @@ Each item is checked on the device, not inferred from logs. `[x]` means verified
 4. **Done.** Our kernel: `barni2000/7.3/develop` built here, booting through lk2nd.
 5. **Done.** Arch Linux ARM root filesystem, with USB networking on first boot.
 6. **In progress.** Wi-Fi, with the rekey problem checked on 7.3 and the patch carried forward if it is still needed. (Still needed; `0101` accepted. Joined from the on-device Wi-Fi settings 2026-10-31; join at boot and rekey over a long run still to verify.)
-7. **Repartition done 2026-10-31** (root 6.6 GiB, 5.3 GiB free; `streams/stage-b/`); voice pipeline in progress. Stage B repartition (root grows to about 6.7 GiB, for the models), then the voice pipeline: recognition, synthesis, the ai& client, and the full-screen app.
+7. **Repartition done 2026-10-31** (root 6.6 GiB; `streams/stage-b/`). **Voice pipeline working end to end, too slow** (2026-11-01): wake word "Hey Straylight" → phrase-by-phrase captions (Qwen3-ASR, 4-6 s after speech) → reply streamed from ai& (device-code sign-in) → spoken (English Matcha+Vocos and Mandarin Piper continuous; Japanese Kokoro on the CPU, about 3x slower than real time, so in pieces) on the Straylight full-screen app (github.com/jethac/straylight-voice, private). Open: sub-second recognition (`streams/asr-fast/`), continuous Japanese and a licence-clean Mandarin (`streams/tts-distil/`, `streams/kokoro-gpu/`), echo cancellation for barge-in.
 8. **In progress** (see the table). Hardware, roughly easiest first: buttons, sensors, backlight, touch, GPU, video decode, Bluetooth, speaker, microphones, echo cancellation, camera.
 9. 24 h soak and the recovery drill.
 
@@ -110,11 +110,16 @@ Each item is checked on the device, not inferred from logs. `[x]` means verified
 - 2026-10-30: `kernel/build.sh` resets the tree and applies the whole patch series on every build (overlapping patches had been applied twice); `deploy-to-device.sh` confirms a reboot by boot ID (`adb reboot` does not always reboot).
 - 2026-10-31: Stage B done: GPT now has 29 partitions (p1-p23 unchanged, `system` 6.80 GiB, `persist`/`syscfg`/`mcfg`/`apdp`/`msadp` moved to the end, 22 Android partitions dropped). aboot and lk2nd boot it. Root grown online to 6.6 GiB.
 - 2026-10-31: Wake word is "Hey Straylight", after the household system the Hub 500 panels belong to. Chosen over anything built on "AI" (constant false triggers in English and Japanese speech) and over a coined name. To verify on the device: recall per language and false triggers per hour on English, Japanese and Mandarin speech.
+- 2026-10-31: Voice output is on-device (ai& serves text only). Magpie-TTS (8.5x slower than real time) and Kokoro-82M on the CPU (about 3x) are too slow; per language, the fastest licence-clean voice that runs in real time: English Matcha-TTS + Vocos (LJSpeech). Mandarin's fast Piper AISHELL-3 voice is warm-started from research-only data, so it is an audition setting on HUA0BMNX only, not shipped. Next: distil Kokoro's voices into Matcha students (one persona, clean licence chain).
+- 2026-11-01: "ai&" is spoken ˌeɪˌaɪˈæːnd ("A-I-AND", stress on a long "and"), Japanese エーアイアンド, Mandarin 诶爱安德 (not yet checked by a native speaker), from the brand pronunciation dictionaries; applied through the TTS lexicon override.
+- 2026-11-01: zram swap (768 MiB, zstd) instead of disk swap, so idle anonymous memory compresses rather than the mapped ASR model being evicted (`tsv-zram`).
+- 2026-11-01: The Adreno 506 does real work only through FP16 fragment shaders over RGBA16F textures (about 16.7 GFLOP/s on a GEMM, beating the best compute kernel's 14.4). Register-heavy shaders are limited by the hardware register file (half registers share it; ir3 did not account for that: `streams/gpu-mesa16/`), so kernels must stay small.
 - 2026-10-30: Repositories are public: `jethac/lenovo-thinksmart-view` and `jethac/thinksmart-view-hal`. No firmware, device captures or secrets in them.
 
 ## Open questions
 
-- Which speech synthesiser covers English, Japanese and Mandarin at usable speed on the A53 cores, and how much RAM do recognition and synthesis need together?
+- A Japanese voice that runs in real time on the A53 cores with a clean licence (VOICEVOX and Kokoro are about 3x too slow). Recognition and synthesis together fit in RAM: the listener peaks at about 1.36 GiB, with at least about 550 MiB free.
+- Recognition under 1 s after speech: SenseVoice-Small (CTC) is usable in all three languages on accuracy; its speed on the device and a hybrid with a streaming English model are not measured yet (`streams/asr-fast/`).
 - How far can Qwen3-ASR latency fall on the CPU: conv stem during speech, speculative decoding, a shorter prompt, a lighter output head? (`streams/asr/NOTES.md`)
 - Which msm8953 patches on `7.1.3/main` (381 commits not on the 7.3 branch) are genuinely missing from `barni2000/7.3/develop`, and do any matter for this device?
 - Does the lens cover cut power to the camera, or only report its state? Does closed read as 1?

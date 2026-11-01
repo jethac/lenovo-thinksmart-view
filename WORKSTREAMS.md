@@ -11,11 +11,18 @@ Parallel lines of work on the ThinkSmart View after the first Linux 7.3 boot. Ea
 | `stage-b` | Repartition so root grows to about 6.7 GiB for the speech models (`devices/storage-emmc`). Omarchy is dropped (see `GOAL.md`) | none expected | user approval before any partition-table write |
 | `idle-rotate` | Gravity-following ai& idle screen (`rootfs/scripts/idle-rotate/`) | none | none |
 | `asr` | On-device speech recognition: Qwen3-ASR-0.6B (transcribe.cpp GGUF) and lighter baselines (sherpa-onnx, SenseVoice, Moonshine, whisper.cpp); GPU feasibility; benchmarks | none expected | `cpufreq` for final numbers; `stage-b` for storage |
+| `voice-ui`, `voice-pipeline`, `settings-auth`, `wakeword` | The Straylight app, wake word, recognition → reply → speech flow, settings, ai& sign-in, Wi-Fi and WPS, hardware-key charms (code in the private `jethac/straylight-voice`) | none | done, in use |
+| `tts` | Speech synthesis bake-offs (Magpie, Kokoro, Matcha, Piper, VOICEVOX, Supertonic, MeloTTS) | none | done; see `tts-distil` |
+| `asr-fast` | Sub-second recognition with CTC/streaming models (SenseVoice, Zipformer, Moonshine) | none | in progress |
+| `tts-distil` | Real-time Matcha voices distilled from Kokoro on the PGX (ja, zh, optionally en) | none | in progress |
+| `gpu-compute`, `kokoro-gpu`, `gpu-mesa16` | Adreno 506 compute: FP16 fragment kernels, Kokoro's decoder on the GPU, Mesa patches (16-bit storage, a5xx register footprint) | none | in progress |
+| `install` (`install/`) | One-session EDL installer: back up, repartition, flash; rehearsed on a disk image only | none | needs a first run on hardware |
 
 ## The device
 
 One tablet, reached over the single USB cable: `adb -s feb0bd1f028e4cb0` (root shell) and `ssh jethac@172.16.42.1`.
 
+- **The device runs the live assistant.** Do not stop `straylight-listen` for more than about 3 minutes at a time; benchmark in separate memory-capped processes (`systemd-run -p MemoryMax=…`) while it runs. Memory is tight (1.94 GiB, zram swap only).
 - **Lock.** Every session that changes anything on the device, or needs it quiet for a measurement, runs under the lock: `flock -w 1800 /home/jethac/Projects/lenovo-8/.device.lock <command>` (or a script that takes it, like `kernel/deploy-to-device.sh`). Read-only peeks (`cat`, `dmesg`, `ls`) may skip it. Keep each locked session short; release between steps.
 - **Leave it on the baseline.** When you release the lock, the device runs the baseline kernel (the accepted series in `kernel/patches/`, built in `kernel/build-7.3`) and the baseline userspace, unless your change has been accepted into the baseline. Test a kernel with `kernel/deploy-to-device.sh --reboot kernel/build-<stream>`, then put the baseline back with `kernel/deploy-to-device.sh --reboot` (or `--rollback --reboot`). Userspace experiments: undo them, or record them in your `NOTES.md` under "left on the device".
 - **If it does not come back** after a reboot within three minutes: stop, do not retry, report. Recovery is EDL (`FLASHING.md`), done by the integrator only.
