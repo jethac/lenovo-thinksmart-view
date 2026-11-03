@@ -82,7 +82,7 @@ def main():
     ap.add_argument("--steps", type=int, default=1000000)
     ap.add_argument("--batch", type=int, default=16)
     ap.add_argument("--samples", type=int, default=8192)
-    ap.add_argument("--every", type=int, default=10000)
+    ap.add_argument("--every", type=int, default=2000)
     ap.add_argument("--workers", type=int, default=5)
     a = ap.parse_args()
     frac = float(os.environ.get("TORCH_MEM_FRACTION", "0") or 0)

@@ -14,7 +14,7 @@ Parallel lines of work on the ThinkSmart View after the first Linux 7.3 boot. Ea
 | `voice-ui`, `voice-pipeline`, `settings-auth`, `wakeword` | The Straylight app, wake word, recognition → reply → speech flow, settings, ai& sign-in, Wi-Fi and WPS, hardware-key charms (code in the private `jethac/straylight-voice`) | none | done, in use |
 | `tts` | Speech synthesis bake-offs (Magpie, Kokoro, Matcha, Piper, VOICEVOX, Supertonic, MeloTTS) | none | done; see `tts-distil` |
 | `asr-fast` | Sub-second recognition with CTC/streaming models (SenseVoice, Zipformer, Moonshine) | none | in progress |
-| `tts-distil` | Real-time Matcha voices distilled from Kokoro on the PGX (ja, zh, optionally en) | none | in progress |
+| `tts-distil` | Real-time voices distilled from Kokoro (en, ja, zh): Kokoro's own text side with a 1/4-width decoder, RTF 0.55-0.60 on the tablet | none | done; installed, image build still to stage them |
 | `gpu-compute`, `kokoro-gpu`, `gpu-mesa16` | Adreno 506 compute: FP16 fragment kernels, Kokoro's decoder on the GPU, Mesa patches (16-bit storage, a5xx register footprint) | none | in progress |
 | `microphones` | DMIC clock: per-decimator clock select fix and a `qcom,dmic-sample-rate` property, board at stock's 2.4 MHz (from justhalfbit's image) | `patches-wip/microphones/`, `05xx` | done; `0501`-`0504` accepted |
 | `audio-dsp` | QDSP6 xrun recovery (reopen instead of re-prepare), freedreno GMEM fix for Mesa 26.2.6, GPU-fault screen freeze | none | done; listener fix on straylight-voice `audio-dsp-recovery`, not deployed; GMEM patch kept, not shipped |

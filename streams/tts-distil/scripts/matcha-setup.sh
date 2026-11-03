@@ -50,6 +50,21 @@ s = s.replace('''    sequence = []
 open(p, "w").write(s)
 EOF
 
+# No text cleaners are used (the input is already Kokoro phonemes), so the
+# espeak backend that cleaners.py builds at import is made optional.
+python - <<'EOF2'
+p = "matcha/text/cleaners.py"
+s = open(p).read()
+s = s.replace("global_phonemizer = phonemizer.backend.EspeakBackend(", "try:\n  global_phonemizer = phonemizer.backend.EspeakBackend(", 1)
+s = s.replace("    logger=critical_logger,\n)\n", "    logger=critical_logger,\n  )\nexcept RuntimeError:\n  global_phonemizer = None\n", 1)
+open(p, "w").write(s)
+EOF2
+grep -q "global_phonemizer = None" matcha/text/cleaners.py
+
+# Validation plots: this matplotlib has no tostring_rgb.
+sed -i 's/    data = np.fromstring(fig.canvas.tostring_rgb(), dtype=np.uint8, sep="")/    data = np.asarray(fig.canvas.buffer_rgba())[..., :3].copy()/' matcha/utils/utils.py
+grep -q buffer_rgba matcha/utils/utils.py
+
 sed -i 's/^n_vocab: 178/n_vocab: 180/' configs/model/matcha.yaml
 # Audio through soundfile (this torchaudio has no decoder backend).
 python - <<'EOF'

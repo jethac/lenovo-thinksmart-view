@@ -8,8 +8,14 @@ Qwen3-ASR round trip (transcribe.cpp CLI, as streams/tts/scripts/rt-asr.py),
 CER over normalised characters; median voiced F0 (pYIN); and for the test
 directories the distance to the same line in REF_DIR after DTW on log-mel
 frames: mel L1 (natural-log mel, 80 bins, 22.05 kHz analysis) and log-
-spectral distance (dB, 513 bins), plus the duration ratio. Summary lines
-(mean per directory and language) at the end, prefixed with '#'.
+spectral distance (dB, 513 bins), plus the duration ratio. English also
+gets a WER (digits in the transcript spelled out first: the recogniser
+writes numbers as digits). Timbre, per directory and language, all files
+pooled against REF_DIR's: RMS difference of the level-normalised long-term
+average spectrum (64 mel bands, dB) and the distance of the mean MFCC 1-12
+(as streams/tts/scripts/kokoro-voices.py). Summary lines (mean per
+directory and language; ids ending in .seen, which are in the training
+corpus, summarised apart) at the end, prefixed with '#'.
 Environment: ASR_CLI, ASR_MODEL (defaults: the asr stream's build).
 """
 import collections, os, subprocess, sys, tempfile, unicodedata
@@ -34,6 +40,41 @@ def cer(r, h):
             c.append(min(p[j] + 1, c[j - 1] + 1, p[j - 1] + (rc != hc)))
         p = c
     return p[-1] / max(1, len(r))
+
+
+def words(s):
+    import re
+    try:
+        from num2words import num2words
+        s = re.sub(r"(\d+):(\d\d)", lambda m: f"{m[1]} {'' if m[2] == '00' else ('oh ' if m[2][0] == '0' else '') + str(int(m[2]))}", s)
+        s = re.sub(r"(\d+)%", r"\1 percent", s)
+        s = re.sub(r"\d+", lambda m: num2words(int(m[0])), s)
+    except ImportError:
+        pass
+    s = unicodedata.normalize("NFKC", s).lower().replace("-", " ").replace("&", " and ")
+    s = "".join(c if c.isalnum() or c in " '" else " " for c in s)
+    # the brand, read as letters: "AI" and "A I" are the same words
+    return " ".join("a i" if w == "ai" else w for w in s.replace("'", "").split()).split()
+
+
+def wer(r, h):
+    r, h = words(r), words(h)
+    p = list(range(len(h) + 1))
+    for i, rc in enumerate(r, 1):
+        c = [i]
+        for j, hc in enumerate(h, 1):
+            c.append(min(p[j] + 1, c[j - 1] + 1, p[j - 1] + (rc != hc)))
+        p = c
+    return p[-1] / max(1, len(r))
+
+
+def spectrum(ys):
+    m = np.concatenate([librosa.feature.melspectrogram(y=trim(y), sr=22050, n_fft=1024, hop_length=256, n_mels=64)
+                        for y in ys], axis=1)
+    ltas = 10 * np.log10(m.mean(1) + 1e-10)
+    ltas -= ltas.mean()
+    mf = librosa.feature.mfcc(S=librosa.power_to_db(m), n_mfcc=13)[1:].mean(1)
+    return ltas, mf
 
 
 def asr(y, lang):
@@ -77,7 +118,8 @@ def main():
         if len(f) >= 3 and not l.startswith("#"):
             text[f[0]] = (f[1], f[2].replace("ai&", ALIAS[f[1]]))
     by = collections.defaultdict(lambda: collections.defaultdict(list))
-    print("dir\tid\tlang\taudio_s\tf0_hz\tcer\tmel_l1\tlsd_db\tdur_ratio\ttranscript")
+    pool = collections.defaultdict(list)
+    print("dir\tid\tlang\taudio_s\tf0_hz\tcer\twer\tmel_l1\tlsd_db\tdur_ratio\ttranscript")
     for d in dirs:
         dn = os.path.basename(d.rstrip("/"))
         for uid in sorted(text):
@@ -91,20 +133,30 @@ def main():
             f0m = float(np.nanmedian(f0[vf])) if vf.any() else 0.0
             h = asr(y16, lang)
             c = cer(ref_text, h)
+            w = wer(ref_text, h) if lang == "en" else float("nan")
+            pool[(dn, lang)].append(y)
             mel = lsd = ratio = float("nan")
             rp = os.path.join(ref, uid + ".wav")
             if d != ref and os.path.exists(rp):
                 yr, _ = librosa.load(rp, sr=22050)
                 mel, lsd = dist(y, yr)
                 ratio = len(trim(y)) / max(1, len(trim(yr)))
-            for k, v in (("cer", c), ("mel", mel), ("lsd", lsd), ("ratio", ratio), ("f0", f0m)):
-                by[(dn, lang)][k].append(v)
-            print(f"{dn}\t{uid}\t{lang}\t{len(y) / 22050:.2f}\t{f0m:.0f}\t{c:.3f}\t{mel:.3f}\t{lsd:.2f}\t{ratio:.3f}\t{h}",
+            grp = lang + (" seen" if uid.endswith(".seen") else " held-out")
+            for k, v in (("cer", c), ("wer", w), ("mel", mel), ("lsd", lsd), ("ratio", ratio), ("f0", f0m)):
+                by[(dn, grp)][k].append(v)
+            print(f"{dn}\t{uid}\t{lang}\t{len(y) / 22050:.2f}\t{f0m:.0f}\t{c:.3f}\t{w:.3f}\t{mel:.3f}\t{lsd:.2f}\t{ratio:.3f}\t{h}",
                   flush=True)
-    for (dn, lang), m in sorted(by.items()):
+    for (dn, grp), m in sorted(by.items()):
         n = len(m["cer"])
         s = " ".join(f"{k} {np.nanmean(v):.3f}" for k, v in m.items() if not np.all(np.isnan(v)))
-        print(f"# {dn} {lang} n={n} {s}")
+        print(f"# {dn} {grp} n={n} {s}")
+    rn = os.path.basename(ref.rstrip("/"))
+    for (dn, lang), ys in sorted(pool.items()):
+        if dn == rn or (rn, lang) not in pool:
+            continue
+        la, ma = spectrum(ys)
+        lb, mb = spectrum(pool[(rn, lang)])
+        print(f"# timbre {dn} {lang} ltas_rms_db {np.sqrt(np.mean((la - lb) ** 2)):.2f} mfcc_dist {np.linalg.norm(ma - mb):.2f}")
 
 
 main()

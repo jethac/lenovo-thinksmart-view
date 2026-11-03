@@ -37,7 +37,7 @@ def main():
         shard, nsh = map(int, sys.argv[sys.argv.index("--shard") + 1].split("/"))
     os.makedirs(os.path.join(out, "wav24"), exist_ok=True)
     os.makedirs(os.path.join(out, "dur"), exist_ok=True)
-    dev = "cuda"
+    dev = "cuda" if torch.cuda.is_available() else "cpu"
     model = KModel(config=os.path.join(kdir, "config.json"), model=os.path.join(kdir, "kokoro-v1_0.pth")).to(dev).eval()
     pack = voice_pack(kdir, voice).to(dev)
     vocab = model.vocab

@@ -1,0 +1,83 @@
+# Evaluation lines (id, lang, text): assistant-style replies written for this evaluation. Ids ending in .seen (greeting, brand line) are also in the training corpus; all others are held out. ai& is read through the lexicon.
+en-greet.seen	en	Hi, I'm Straylight. How can I help?
+en-cal	en	Your next meeting is the quarterly review with the design team, at two thirty this afternoon in room four.
+en-two	en	Sure, I've moved your dentist appointment to Thursday morning. I'll remind you an hour before it starts.
+en-3	en	Good morning. You have three meetings today, and the first one starts at nine thirty. The afternoon is free after two, so it's a good time for focused work.
+en-brand.seen	en	Welcome to ai&. I'm Straylight, ai&'s assistant.
+en-brand2	en	This room is booked through ai& until half past four.
+en-brand3	en	ai& can join the call for you and take notes.
+en-h01	en	The projector in this room is already on, and the cable is in the drawer under the table.
+en-h02	en	I couldn't find a meeting called budget planning on your calendar for next week.
+en-h03	en	Your flight to Osaka leaves at seven forty tomorrow morning from terminal two.
+en-h04	en	It's eleven degrees outside right now, with light rain expected around six.
+en-h05	en	I've sent the agenda to everyone on the invitation, including the two guests from marketing.
+en-h06	en	The next train to the airport leaves in twelve minutes from platform three.
+en-h07	en	Do you want me to start the video call now, or wait until everyone has joined?
+en-h08	en	Room six is free for the next hour. Shall I book it for you?
+en-h09	en	Your lunch with Priya was moved to Friday at half past twelve.
+en-h10	en	Sorry, I didn't catch that. Could you say it again a little more slowly?
+en-h11	en	The volume is now at forty percent. Tell me if you'd like it louder.
+en-h12	en	I've set a timer for twenty five minutes. I'll let you know when it's done.
+en-h13	en	There are four unread messages from the facilities team about the move on Monday.
+en-h14	en	The quarterly numbers are in the shared folder, in the file called summary draft.
+en-h15	en	Okay, I've muted the microphone. Say my name when you want me to listen again.
+en-h16	en	Your one on one with Daniel is the last meeting today, from five to five thirty.
+en-h17	en	The building closes at nine tonight, and the side entrance locks at eight.
+en-h18	en	I can read the notes from yesterday's meeting, or send them to your email.
+en-h19	en	Traffic on the way to the office is heavy, so the drive will take about forty minutes.
+en-h20	en	Nobody has accepted the invitation for Wednesday yet. Should I send a reminder?
+en-h21	en	The printer on the third floor is out of paper, but the one by the kitchen is working.
+en-h22	en	Happy birthday to Mei, whose party is in the lounge at four o'clock.
+en-h23	en	I've added milk, eggs and coffee to your shopping list.
+en-h24	en	That meeting overlaps with your call with the London office. Which one should I keep?
+en-h25	en	The screen will turn off after five minutes without anyone nearby.
+ja-greet.seen	ja	こんにちは、ストレイライトです。ご用件をどうぞ。
+ja-cal	ja	次の予定は、午後二時半から四番会議室で、デザインチームとの定例会議です。
+ja-two	ja	歯医者の予約を、木曜日の午前中に変更しました。始まる一時間前にお知らせします。
+ja-3	ja	おはようございます。今日は会議が三件あり、最初の会議は九時半からです。午後二時以降は空いているので、集中して作業できます。
+ja-brand.seen	ja	ai&へようこそ。ai&のアシスタント、ストレイライトです。
+ja-brand2	ja	この会議室は、ai&で四時半まで予約されています。
+ja-h01	ja	この部屋のプロジェクターはもう点いています。ケーブルは机の下の引き出しにあります。
+ja-h02	ja	来週の予定に、予算会議という名前の会議は見つかりませんでした。
+ja-h03	ja	明日の大阪行きの便は、朝七時四十分に第二ターミナルから出発します。
+ja-h04	ja	今の気温は十一度で、六時ごろから小雨が降る予報です。
+ja-h05	ja	招待されている全員に、議題を送りました。
+ja-h06	ja	空港行きの次の電車は、十二分後に三番線から出ます。
+ja-h07	ja	ビデオ会議を今始めますか、それとも全員がそろうまで待ちますか。
+ja-h08	ja	六番の会議室は、これから一時間空いています。予約しましょうか。
+ja-h09	ja	すみません、聞き取れませんでした。もう一度ゆっくり言っていただけますか。
+ja-h10	ja	音量を四十パーセントにしました。大きくしたい時は言ってください。
+ja-h11	ja	二十五分のタイマーをセットしました。終わったらお知らせします。
+ja-h12	ja	マイクをミュートにしました。また聞いてほしい時は、名前を呼んでください。
+ja-h13	ja	ビルは今夜九時に閉まり、通用口は八時に施錠されます。
+ja-h14	ja	会社までの道が混んでいるので、車で四十分ほどかかります。
+ja-h15	ja	水曜日の招待に、まだ誰も返事をしていません。リマインダーを送りましょうか。
+ja-h16	ja	買い物リストに、牛乳と卵とコーヒーを追加しました。
+ja-h17	ja	その会議は、ロンドン事務所との通話と重なっています。どちらを残しますか。
+ja-h18	ja	近くに誰もいない状態が五分続くと、画面が消えます。
+ja-h19	ja	三階のプリンターは紙切れですが、給湯室の横のプリンターは使えます。
+zh-greet.seen	zh	你好，我是你的语音助手。有什么可以帮你的吗？
+zh-cal	zh	你的下一个会议是和设计团队的季度评审，在今天下午两点半，四号会议室。
+zh-two	zh	好的，我已经把你的牙医预约改到星期四上午。我会在开始前一个小时提醒你。
+zh-3	zh	早上好。你今天有三个会议，第一个九点半开始。下午两点以后没有安排，适合专心工作。
+zh-brand.seen	zh	欢迎来到ai&。我是ai&的助手，Straylight。
+zh-brand2	zh	这个会议室已经通过ai&预订到四点半。
+zh-h01	zh	这个房间的投影仪已经打开了，线在桌子下面的抽屉里。
+zh-h02	zh	我在你下周的日程里没有找到叫预算规划的会议。
+zh-h03	zh	你明天去大阪的航班早上七点四十分从二号航站楼起飞。
+zh-h04	zh	现在外面十一度，预计六点左右会有小雨。
+zh-h05	zh	我已经把议程发给了邀请里的每一个人。
+zh-h06	zh	下一班去机场的火车十二分钟后从三号站台出发。
+zh-h07	zh	要我现在开始视频会议，还是等所有人都到了再开始？
+zh-h08	zh	六号会议室接下来一个小时是空的，要我帮你预订吗？
+zh-h09	zh	对不起，我没听清楚。你能再慢一点说一遍吗？
+zh-h10	zh	音量已经调到百分之四十。如果想大一点，请告诉我。
+zh-h11	zh	我设了一个二十五分钟的计时器，时间到了会提醒你。
+zh-h12	zh	麦克风已经静音了。想让我再听的时候，叫我的名字就行。
+zh-h13	zh	大楼今晚九点关门，侧门八点上锁。
+zh-h14	zh	去公司的路上很堵，开车大概要四十分钟。
+zh-h15	zh	星期三的邀请还没有人接受，要我发个提醒吗？
+zh-h16	zh	我已经把牛奶、鸡蛋和咖啡加到你的购物清单里了。
+zh-h17	zh	那个会议和你跟伦敦办公室的通话时间冲突了，要保留哪一个？
+zh-h18	zh	附近没有人五分钟以后，屏幕会自动关闭。
+zh-h19	zh	三楼的打印机没纸了，不过厨房旁边那台可以用。

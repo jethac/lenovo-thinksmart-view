@@ -42,9 +42,19 @@ trainer:
   check_val_every_n_epoch: 5
 callbacks:
   model_checkpoint:
+    filename: checkpoint_{{step:07d}}
     every_n_epochs: null
-    every_n_train_steps: 10000
+    every_n_train_steps: 2000
+    save_top_k: 5
+    monitor: step
+    mode: max
+  model_checkpoint_keep:
+    _target_: lightning.pytorch.callbacks.ModelCheckpoint
+    dirpath: ${{paths.output_dir}}/checkpoints/keep
+    filename: checkpoint_{{step:07d}}
+    every_n_train_steps: 20000
     save_top_k: -1
     monitor: null
+    save_last: false
 """)
 EOF
