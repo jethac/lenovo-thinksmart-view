@@ -11,6 +11,7 @@ What is specific about the SoC in this ThinkSmart View (serial `HUA0BMNX`), and 
 | | Value | From |
 | --- | --- | --- |
 | Part | APQ8053: the MSM8953 (Snapdragon 625 family) with no modem | measured (`/sys/devices/soc0/machine`, EDL "CPU detected") |
+| Variant | **APQ8053-Lite, marketed as Snapdragon 624**. Lite and Pro share the CPU and the Adreno 506; Lite's Venus codec is 1080p (HEVC decode 1080p60, encode 1080p90) where Pro does 4K30. Linux does not expose the suffix | source ([Lenovo PSREF](https://psref.lenovo.com/product/thinksmart/thinksmart_view?tab=spec) lists Snapdragon 624; [Lantronix Open-Q 624A guide](https://cdn.lantronix.com/wp-content/uploads/pdf/PMD-00065-Open-Q-624A-Development-Kit-User-Guide-Rev_A.pdf) maps 624 to APQ8053-Lite; [Qualcomm APQ8053 brief](https://www.qualcomm.com/content/dam/qcomm-martech/dm-assets/documents/apq8053-socs-product-brief_87-pg760-1-b.pdf) gives the Lite/Pro codec limits); consistent with the measured 1.8048 GHz CPU ceiling and the `apq8053-lite` board file |
 | SoC ID | 304 (`QCOM_ID_APQ8053`), revision 1.1 | measured (`soc0/soc_id`, `soc0/revision`) |
 | EDL HWID | `0x000660e160008000`: MSM_ID `0x000660e1`, OEM_ID `0x6000`, MODEL_ID `0x8000` (MSM8953 proper is `0x000460e1`) | measured (EDL Sahara) |
 | OEM PK hash | `b9eca30dfea4693497b6ac7eec81d006967281e259eb9ac239f9ce6dabb70c14` | measured (EDL); decides which firehose programmer the boot ROM accepts |
@@ -70,7 +71,7 @@ AArch32 (A32/T32): ARMv8 AArch32 with VFPv4, NEON, AES/SHA1/SHA2/CRC32, `idiva`/
 | --- | --- | --- |
 | ADSP (Hexagon) | running (`remoteproc0`, `adsp`) | Firmware `ADSP.8976.2.8.1-00076`, 2017-10-09 (the MSM8976 ADSP branch). measured. No HVX vector unit on this generation. inferred. Runs audio routing (Q6 AFE). FastRPC is built (`CONFIG_QCOM_FASTRPC=m`) but has no device-tree node; running our own code there would need Qualcomm-signed DSP images |
 | Sensors subsystem (SSC) | not used | On stock the ADSP owns the sensor bus (TrustZone-protected BLSP). Mainline bit-bangs I2C on GPIO 6/7 instead: about 1 ms CPU per accelerometer read |
-| Venus | not enabled yet | Hardware H.264/HEVC decode and encode. The prior port found that B-frames stall |
+| Venus | not enabled yet | Hardware H.264/HEVC decode and encode, up to 1080p on the Lite part. The prior port found that B-frames stall |
 | CAMSS + CCI | SoC nodes only | CSIPHY0/2, CSID, CCI, CPP; no board nodes yet |
 | Modem (MPSS) | absent | APQ part; mainline deletes its nodes and memory |
 | WCNSS (Pronto) | unused | Wi-Fi/BT are an external QCA9379 instead. Stock still exposed WCNSS FM (`radio-iris`) |
