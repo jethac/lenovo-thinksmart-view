@@ -1,0 +1,108 @@
+From 8bcced4a2833e6484dbccfe5c5d179a23c269291 Mon Sep 17 00:00:00 2001
+From: Jetha Chan <jethachan@gmail.com>
+Date: Tue, 3 Nov 2026 18:26:40 +0900
+Subject: [PATCH] ASoC: codecs: msm8916-wcd-digital: set the DMIC clock per
+ decimator
+
+TXn_DMIC_CTL holds the DMIC clock select of decimator n; it has to match
+the divider of the DMIC clock generator in CLK_DMIC_B1_CTL or the
+decimator samples the data line at the wrong rate and its output is
+full-scale noise.
+
+The driver writes TXn_DMIC_CTL from the DMIC widget event, indexed by
+the DMIC line number: DMIC1 sets TX1_DMIC_CTL and DMIC2 sets
+TX2_DMIC_CTL. That is only right when DECn is fed from DMICn. With the
+muxes crossed (DEC1 MUX = DMIC2, DEC2 MUX = DMIC1, as on the Lenovo
+ThinkSmart View), or with one DMIC routed to a decimator of the other
+number, the decimator in use keeps whatever clock select it had before.
+
+Write the clock select from the decimator event instead, so each
+decimator that is powered up gets the setting of the shared DMIC clock.
+The DMIC widget event only programs the clock generator now, which also
+removes the parsing of the DMIC number from the widget name.
+
+The problem was found and first fixed by justhalfbit in the Ubuntu
+image for the ThinkSmart View.
+
+Signed-off-by: Jetha Chan <jethachan@gmail.com>
+---
+ sound/soc/codecs/msm8916-wcd-digital.c | 38 ++++++++------------------
+ 1 file changed, 11 insertions(+), 27 deletions(-)
+
+diff --git a/sound/soc/codecs/msm8916-wcd-digital.c b/sound/soc/codecs/msm8916-wcd-digital.c
+index e14c94aaa..85ccfc689 100644
+--- a/sound/soc/codecs/msm8916-wcd-digital.c
++++ b/sound/soc/codecs/msm8916-wcd-digital.c
+@@ -600,12 +600,13 @@ static int msm8916_wcd_digital_enable_dec(struct snd_soc_dapm_widget *w,
+ {
+ 	struct snd_soc_component *component = snd_soc_dapm_to_component(w->dapm);
+ 	unsigned int decimator = w->shift + 1;
+-	u16 dec_reset_reg, tx_vol_ctl_reg, tx_mux_ctl_reg;
++	u16 dec_reset_reg, tx_vol_ctl_reg, tx_mux_ctl_reg, tx_dmic_ctl_reg;
+ 	u8 dec_hpf_cut_of_freq;
+ 
+ 	dec_reset_reg = LPASS_CDC_CLK_TX_RESET_B1_CTL;
+ 	tx_vol_ctl_reg = LPASS_CDC_TX1_VOL_CTL_CFG + 32 * (decimator - 1);
+ 	tx_mux_ctl_reg = LPASS_CDC_TX1_MUX_CTL + 32 * (decimator - 1);
++	tx_dmic_ctl_reg = LPASS_CDC_TX1_DMIC_CTL + 32 * (decimator - 1);
+ 
+ 	switch (event) {
+ 	case SND_SOC_DAPM_PRE_PMU:
+@@ -622,6 +623,14 @@ static int msm8916_wcd_digital_enable_dec(struct snd_soc_dapm_widget *w,
+ 					    TX_MUX_CTL_CUT_OFF_FREQ_MASK,
+ 					    TX_MUX_CTL_CF_NEG_3DB_150HZ);
+ 		}
++		/*
++		 * The DMIC clock select in TXn_DMIC_CTL belongs to the
++		 * decimator and must match the DMIC clock generator, whichever
++		 * DMIC line the decimator is fed from.
++		 */
++		snd_soc_component_update_bits(component, tx_dmic_ctl_reg,
++					      TXN_DMIC_CTL_CLK_SEL_MASK,
++					      TXN_DMIC_CTL_CLK_SEL_DIV3);
+ 		break;
+ 	case SND_SOC_DAPM_POST_PMU:
+ 		/* enable HPF */
+@@ -662,38 +671,13 @@ static int msm8916_wcd_digital_enable_dmic(struct snd_soc_dapm_widget *w,
+ 					   int event)
+ {
+ 	struct snd_soc_component *component = snd_soc_dapm_to_component(w->dapm);
+-	unsigned int dmic;
+-	int ret;
+-	/* get dmic number out of widget name */
+-	char *dmic_num = strpbrk(w->name, "12");
+-
+-	if (dmic_num == NULL) {
+-		dev_err(component->dev, "Invalid DMIC\n");
+-		return -EINVAL;
+-	}
+-	ret = kstrtouint(dmic_num, 10, &dmic);
+-	if (ret < 0 || dmic > 2) {
+-		dev_err(component->dev, "Invalid DMIC line on the component\n");
+-		return -EINVAL;
+-	}
+ 
+ 	switch (event) {
+ 	case SND_SOC_DAPM_PRE_PMU:
++		/* the decimators get the matching setting in enable_dec */
+ 		snd_soc_component_update_bits(component, LPASS_CDC_CLK_DMIC_B1_CTL,
+ 				    DMIC_B1_CTL_DMIC0_CLK_SEL_MASK,
+ 				    DMIC_B1_CTL_DMIC0_CLK_SEL_DIV3);
+-		switch (dmic) {
+-		case 1:
+-			snd_soc_component_update_bits(component, LPASS_CDC_TX1_DMIC_CTL,
+-					    TXN_DMIC_CTL_CLK_SEL_MASK,
+-					    TXN_DMIC_CTL_CLK_SEL_DIV3);
+-			break;
+-		case 2:
+-			snd_soc_component_update_bits(component, LPASS_CDC_TX2_DMIC_CTL,
+-					    TXN_DMIC_CTL_CLK_SEL_MASK,
+-					    TXN_DMIC_CTL_CLK_SEL_DIV3);
+-			break;
+-		}
+ 		break;
+ 	}
+ 
+-- 
+2.56.0
+

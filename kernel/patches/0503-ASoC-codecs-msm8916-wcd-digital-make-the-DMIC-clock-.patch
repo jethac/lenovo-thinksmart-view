@@ -1,0 +1,113 @@
+From aabb1c7b94f23ec8fda017f3e2d12b57c5705dd6 Mon Sep 17 00:00:00 2001
+From: Jetha Chan <jethachan@gmail.com>
+Date: Tue, 3 Nov 2026 18:27:16 +0900
+Subject: [PATCH] ASoC: codecs: msm8916-wcd-digital: make the DMIC clock rate
+ configurable
+
+The DMIC clock is fixed at MCLK/3, 3.2 MHz with the usual 9.6 MHz MCLK.
+Boards may need a slower clock for their microphones: the vendor kernel
+for the Lenovo ThinkSmart View runs the DMICs at 2.4 MHz, and on some
+units one of its two microphones has been reported to give noise rather
+than audio at 3.2 MHz.
+
+Read the optional qcom,dmic-sample-rate property, the highest DMIC
+clock rate the board can take, and use the fastest MCLK divider (2, 3,
+4, 6 or 16) whose output does not exceed it, for the DMIC clock
+generator and for every decimator. Without the property, or with an
+unknown MCLK rate, the divider stays at 3 as before. The property name
+and meaning follow the LPASS VA and WSA macros.
+
+The decimation filters are not changed: the decimator clock select is
+what tells them the DMIC clock rate, and it is set to the same value.
+
+Signed-off-by: Jetha Chan <jethachan@gmail.com>
+---
+ sound/soc/codecs/msm8916-wcd-digital.c | 37 ++++++++++++++++++++++++--
+ 1 file changed, 35 insertions(+), 2 deletions(-)
+
+diff --git a/sound/soc/codecs/msm8916-wcd-digital.c b/sound/soc/codecs/msm8916-wcd-digital.c
+index 85ccfc689..969902a45 100644
+--- a/sound/soc/codecs/msm8916-wcd-digital.c
++++ b/sound/soc/codecs/msm8916-wcd-digital.c
+@@ -1,6 +1,7 @@
+ // SPDX-License-Identifier: GPL-2.0
+ // Copyright (c) 2016, The Linux Foundation. All rights reserved.
+ 
++#include <linux/bitfield.h>
+ #include <linux/module.h>
+ #include <linux/err.h>
+ #include <linux/kernel.h>
+@@ -226,6 +227,7 @@ struct wcd_iir_filter_ctl {
+ 
+ struct msm8916_wcd_digital_priv {
+ 	struct clk *ahbclk, *mclk;
++	u32 dmic_clk_rate;
+ };
+ 
+ static const unsigned long rx_gain_reg[] = {
+@@ -594,6 +596,32 @@ static int msm8916_wcd_digital_enable_interpolator(
+ 	return 0;
+ }
+ 
++/*
++ * DMIC clock select, shared by the DMIC clock generator and the decimators:
++ * MCLK/3 unless a maximum DMIC clock rate is given, then the fastest of
++ * MCLK/2, /3, /4, /6 and /16 that does not exceed it.
++ */
++static unsigned int msm8916_wcd_digital_dmic_clk_sel(struct snd_soc_component *component)
++{
++	static const unsigned int divs[] = { 2, 3, 4, 6, 16 };
++	struct msm8916_wcd_digital_priv *priv = snd_soc_component_get_drvdata(component);
++	unsigned long mclk_rate;
++	unsigned int sel;
++
++	if (!priv->dmic_clk_rate)
++		return TXN_DMIC_CTL_CLK_SEL_DIV3;
++
++	mclk_rate = clk_get_rate(priv->mclk);
++	if (!mclk_rate)
++		return TXN_DMIC_CTL_CLK_SEL_DIV3;
++
++	for (sel = 0; sel < ARRAY_SIZE(divs) - 1; sel++)
++		if (mclk_rate / divs[sel] <= priv->dmic_clk_rate)
++			break;
++
++	return sel;
++}
++
+ static int msm8916_wcd_digital_enable_dec(struct snd_soc_dapm_widget *w,
+ 					  struct snd_kcontrol *kcontrol,
+ 					  int event)
+@@ -630,7 +658,7 @@ static int msm8916_wcd_digital_enable_dec(struct snd_soc_dapm_widget *w,
+ 		 */
+ 		snd_soc_component_update_bits(component, tx_dmic_ctl_reg,
+ 					      TXN_DMIC_CTL_CLK_SEL_MASK,
+-					      TXN_DMIC_CTL_CLK_SEL_DIV3);
++					      msm8916_wcd_digital_dmic_clk_sel(component));
+ 		break;
+ 	case SND_SOC_DAPM_POST_PMU:
+ 		/* enable HPF */
+@@ -677,7 +705,8 @@ static int msm8916_wcd_digital_enable_dmic(struct snd_soc_dapm_widget *w,
+ 		/* the decimators get the matching setting in enable_dec */
+ 		snd_soc_component_update_bits(component, LPASS_CDC_CLK_DMIC_B1_CTL,
+ 				    DMIC_B1_CTL_DMIC0_CLK_SEL_MASK,
+-				    DMIC_B1_CTL_DMIC0_CLK_SEL_DIV3);
++				    FIELD_PREP(DMIC_B1_CTL_DMIC0_CLK_SEL_MASK,
++					       msm8916_wcd_digital_dmic_clk_sel(component)));
+ 		break;
+ 	}
+ 
+@@ -1157,6 +1186,10 @@ static int msm8916_wcd_digital_probe(struct platform_device *pdev)
+ 	if (!priv)
+ 		return -ENOMEM;
+ 
++	/* optional; zero keeps the MCLK/3 default */
++	of_property_read_u32(dev->of_node, "qcom,dmic-sample-rate",
++			     &priv->dmic_clk_rate);
++
+ 	base = devm_platform_ioremap_resource(pdev, 0);
+ 	if (IS_ERR(base))
+ 		return PTR_ERR(base);
+-- 
+2.56.0
+

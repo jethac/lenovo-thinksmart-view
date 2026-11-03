@@ -1,0 +1,39 @@
+From 30b69dc186219443daaf0c75097c2735248a81dc Mon Sep 17 00:00:00 2001
+From: Jetha Chan <jethachan@gmail.com>
+Date: Tue, 3 Nov 2026 18:27:16 +0900
+Subject: [PATCH] arm64: dts: qcom: apq8053-lenovo-cd-18781y: run the DMICs at
+ 2.4 MHz
+
+The vendor device tree runs the ThinkSmart View's DMICs at 2.4 MHz
+(qcom,cdc-dmic-sample-rate = <2400000>) rather than the codec's default
+3.2 MHz, and on some units one of the two microphones has been reported
+to give noise at 3.2 MHz. Use the vendor rate.
+
+Both channels measure the same at either rate on the unit tested here
+(room noise and speech level within 1 dB, no clipping or full-scale
+noise), so the lower rate costs nothing.
+
+Signed-off-by: Jetha Chan <jethachan@gmail.com>
+---
+ arch/arm64/boot/dts/qcom/apq8053-lenovo-cd-18781y.dts | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/qcom/apq8053-lenovo-cd-18781y.dts b/arch/arm64/boot/dts/qcom/apq8053-lenovo-cd-18781y.dts
+index e0e137610..8a1e30096 100644
+--- a/arch/arm64/boot/dts/qcom/apq8053-lenovo-cd-18781y.dts
++++ b/arch/arm64/boot/dts/qcom/apq8053-lenovo-cd-18781y.dts
+@@ -594,6 +594,11 @@ &lpass {
+ 	status = "okay";
+ };
+ 
++&lpass_codec {
++	/* the vendor rate; DMIC1 is reported noisy at 3.2 MHz on some units */
++	qcom,dmic-sample-rate = <2400000>;
++};
++
+ &wcd_codec {
+ 	vdd-cdc-io-supply = <&pm8953_l5>;
+ 	vdd-cdc-tx-rx-cx-supply = <&pm8953_s4>;
+-- 
+2.56.0
+

@@ -36,9 +36,11 @@ kernel/.deploy.*
 
 # Workstream scratch
 streams/*/downloads/
+streams/*/downloads
 streams/*/work/
 kernel/wt-*/
 kernel/build-*/
+kernel/build-*
 
 # Camera stream scratch (vendor extracts, venv)
 streams/camera/work/

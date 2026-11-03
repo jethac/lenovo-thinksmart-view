@@ -1,0 +1,47 @@
+From 980e96b10c06534901bb403906c1228ac016718c Mon Sep 17 00:00:00 2001
+From: Jetha Chan <jethachan@gmail.com>
+Date: Tue, 3 Nov 2026 18:27:16 +0900
+Subject: [PATCH] ASoC: dt-bindings: qcom,msm8916-wcd-digital-codec: add
+ qcom,dmic-sample-rate
+
+The digital codec divides MCLK by 2, 3, 4, 6 or 16 for the DMIC clock
+and the driver always uses 3. Some boards need a slower clock for their
+microphones to deliver clean data. Add an optional property for the
+highest DMIC clock rate the board can take, with the same name as in
+the LPASS VA and WSA macro bindings.
+
+Signed-off-by: Jetha Chan <jethachan@gmail.com>
+---
+ .../sound/qcom,msm8916-wcd-digital-codec.yaml         | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/Documentation/devicetree/bindings/sound/qcom,msm8916-wcd-digital-codec.yaml b/Documentation/devicetree/bindings/sound/qcom,msm8916-wcd-digital-codec.yaml
+index 33bc23b61..7a85d9cd9 100644
+--- a/Documentation/devicetree/bindings/sound/qcom,msm8916-wcd-digital-codec.yaml
++++ b/Documentation/devicetree/bindings/sound/qcom,msm8916-wcd-digital-codec.yaml
+@@ -36,6 +36,16 @@ properties:
+   '#sound-dai-cells':
+     const: 1
+ 
++  qcom,dmic-sample-rate:
++    description:
++      Highest DMIC clock rate in Hz the microphones can take. The codec
++      uses the fastest MCLK divider (2, 3, 4, 6 or 16) whose output does
++      not exceed it. If absent, the DMIC clock is MCLK / 3 (3.2 MHz with
++      a 9.6 MHz MCLK).
++    $ref: /schemas/types.yaml#/definitions/uint32
++    minimum: 600000
++    maximum: 6144000
++
+ required:
+   - compatible
+   - reg
+@@ -58,4 +68,5 @@ examples:
+                  <&gcc GCC_CODEC_DIGCODEC_CLK>;
+         clock-names = "ahbix-clk", "mclk";
+         #sound-dai-cells = <1>;
++        qcom,dmic-sample-rate = <2400000>;
+     };
+-- 
+2.56.0
+
