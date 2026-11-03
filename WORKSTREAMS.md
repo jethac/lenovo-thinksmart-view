@@ -18,7 +18,7 @@ Parallel lines of work on the ThinkSmart View after the first Linux 7.3 boot. Ea
 | `gpu-compute`, `kokoro-gpu`, `gpu-mesa16` | Adreno 506 compute: FP16 fragment kernels, Kokoro's decoder on the GPU, Mesa patches (16-bit storage, a5xx register footprint) | none | in progress |
 | `microphones` | DMIC clock: per-decimator clock select fix and a `qcom,dmic-sample-rate` property, board at stock's 2.4 MHz (from justhalfbit's image) | `patches-wip/microphones/`, `05xx` | done; `0501`-`0504` accepted |
 | `audio-dsp` | QDSP6 xrun recovery (reopen instead of re-prepare), freedreno GMEM fix for Mesa 26.2.6, GPU-fault screen freeze | none | done; listener fix on straylight-voice `audio-dsp-recovery`, not deployed; GMEM patch kept, not shipped |
-| `screen-wake` | Idle blanking, ambient-light brightness, wake on touch, motion, proximity (VCNL4200 at a limited LED current) and wake word | see its `NOTES.md` | in progress |
+| `screen-wake` | Idle blanking, ambient-light brightness, wake on touch, motion, proximity (VCNL4200 limited to one measurement per read) and wake word | `patches-wip/screen-wake/`, `06xx` | done; `0601`-`0602` accepted, app on straylight-voice main |
 | `install` (`install/`) | One-session EDL installer: back up, repartition, flash; rehearsed on a disk image only | none | needs a first run on hardware |
 
 ## The device

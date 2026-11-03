@@ -1,0 +1,42 @@
+arm64: dts: qcom: apq8053-lenovo-cd-18781y: enable the VCNL4200
+
+With the driver measuring proximity on demand (0601), the IR LED fires only
+for a proximity read, so the node can be enabled. The IRED on this board is
+driven through an external FET (LED_I makes no difference to the counts:
+measured at 50, 120 and 200 mA), so the LED current is the board's, and what
+userspace sets is pulses, pulse width and read rate.
+
+Also name the I/O supply as the binding and the driver do (vio-supply, not
+vddio-supply); with the old name the driver took a dummy regulator for it.
+
+diff --git i/arch/arm64/boot/dts/qcom/apq8053-lenovo-cd-18781y.dts w/arch/arm64/boot/dts/qcom/apq8053-lenovo-cd-18781y.dts
+index e0e137610..c16cee380 100644
+--- i/arch/arm64/boot/dts/qcom/apq8053-lenovo-cd-18781y.dts
++++ w/arch/arm64/boot/dts/qcom/apq8053-lenovo-cd-18781y.dts
+@@ -100,7 +100,7 @@ light-sensor@51 {
+ 			compatible = "vishay,vcnl4200";
+ 			reg = <0x51>;
+ 			vdd-supply = <&pm8953_l10>;
+-			vddio-supply = <&pm8953_l6>;
++			vio-supply = <&pm8953_l6>;
+ 
+ 			interrupt-parent = <&tlmm>;
+ 			interrupts = <43 IRQ_TYPE_EDGE_RISING>;
+@@ -110,12 +110,12 @@ light-sensor@51 {
+ 			pinctrl-names = "default";
+ 
+ 			/*
+-			 * WARNING: Do not enable for now!
+-			 * There's a chance that this can burn out the sensor's IR LED.
+-			 * The sensor turns on the IR LED at high power (so that it
+-			 * gets noticeably warm) and never turns it off.
++			 * The IR LED is driven through an external FET, so its
++			 * current is set by the board, not by LED_I. The driver
++			 * pulses it only for a proximity read (active force mode)
++			 * unless a proximity event is enabled, which then runs it
++			 * continuously: do not enable proximity events here.
+ 			 */
+-			status = "disabled";
+ 		};
+ 	};
+ 

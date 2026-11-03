@@ -1,0 +1,8 @@
+# VCNL4200 ambient light and proximity sensor (vcnl4000 IIO driver).
+# One IR LED pulse per proximity measurement, the lowest LED_I (it only drives
+# the external FET on this board) and a 4T pulse width, written as soon as the
+# device appears, before anything reads it. With the project's kernel
+# (patch 0601) the LED fires only when in_proximity_raw is read; the screen
+# (straylight-voice) reads it only while the backlight is off and writes the
+# same settings again when it starts. See streams/screen-wake/NOTES.md.
+ACTION=="add", SUBSYSTEM=="iio", ATTR{name}=="vcnl4000", ATTR{in_proximity_oversampling_ratio}="1", ATTR{in_proximity_calibbias}="0.050000", ATTR{in_proximity_integration_time}="0.000384", ATTR{in_illuminance_integration_time}="0.100000"

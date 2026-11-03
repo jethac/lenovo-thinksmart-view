@@ -7,9 +7,9 @@
 # are pinned by straylight-voice itself (Slint as a git dependency at a revision
 # in its Cargo.toml and Cargo.lock; transcribe.cpp by listen/asr/build.sh).
 STRAYLIGHT_REPO=git@github.com:jethac/straylight-voice.git
-STRAYLIGHT_COMMIT=b8f4a2636e61f1f45cdbc1206879623697aa339f
+STRAYLIGHT_COMMIT=a1c64660e14d502c5814dfc8a126b4c0bf644eab
 VIEW_HAL_REPO=git@github.com:jethac/thinksmart-view-hal.git
-VIEW_HAL_COMMIT=560905784220d76aeceab31da7a01bdb14f713ab
+VIEW_HAL_COMMIT=ffc9d6182cc0f0dfb9d8615fd9a23b7741d110fc
 SLINT_REPO=git@github.com:jethac/slint.git
 TRANSCRIBE_REPO=git@github.com:handy-computer/transcribe.cpp.git
 
