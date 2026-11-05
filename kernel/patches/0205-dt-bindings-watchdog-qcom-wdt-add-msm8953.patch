@@ -1,0 +1,26 @@
+From 0c5713c42c35216319dc6c52e866635eb3670b0c Mon Sep 17 00:00:00 2001
+From: Jetha Chan <jethachan@gmail.com>
+Date: Wed, 4 Nov 2026 18:03:36 +0900
+Subject: [PATCH 205/206] dt-bindings: watchdog: qcom-wdt: add msm8953
+
+The MSM8953 APSS watchdog at 0xb017000 is the KPSS-compatible block used
+on MSM8916 and QCM2290.
+---
+ Documentation/devicetree/bindings/watchdog/qcom-wdt.yaml | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/Documentation/devicetree/bindings/watchdog/qcom-wdt.yaml b/Documentation/devicetree/bindings/watchdog/qcom-wdt.yaml
+index 4ff61102e..688ef6c5e 100644
+--- a/Documentation/devicetree/bindings/watchdog/qcom-wdt.yaml
++++ b/Documentation/devicetree/bindings/watchdog/qcom-wdt.yaml
+@@ -29,6 +29,7 @@ properties:
+               - qcom,apss-wdt-kaanapali
+               - qcom,apss-wdt-maili
+               - qcom,apss-wdt-msm8226
++              - qcom,apss-wdt-msm8953
+               - qcom,apss-wdt-msm8974
+               - qcom,apss-wdt-msm8994
+               - qcom,apss-wdt-nord
+-- 
+2.56.0
+
