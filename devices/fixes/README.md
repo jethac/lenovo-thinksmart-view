@@ -9,7 +9,7 @@ Each hunk comes from a specific analysis; the reasoning and tests are there, not
 
 | Hunk | Change | From | Why |
 | --- | --- | --- | --- |
-| gpio-keys comment | correct the "hardware mute switch" claim | `privacy-switches/ANALYSIS.md` §5 | Measured: the only switch fitted is the lens cover and it does not mute the mic. |
+| gpio-keys comment | none: the upstream "hardware mute switch" comment is right | `privacy-switches/ANALYSIS.md` §5 | Withdrawn 2026-11-06: the mute slider exists and mutes in hardware. |
 | panel `compatible` | `lenovo,cd-18781y-panel` → `lenovo,cd-18781y-ft8201` | `display-panel/ANALYSIS.md` §5 | The DTS string matches no driver; the FT8201 driver's line even carries `// FIXME`. This unit is the FocalTech variant. |
 | WLED | `current-boost-limit = <980>`, `ovp-millivolt = <29500>`, `enabled-strings = <0 1 2 3>` (which also sets the string count; setting both would warn) | `backlight/ANALYSIS.md` §6 | Driver defaults are 1260 mA and 32.5 V, both *above* stock's 980 mA / 29.5 V. The brief says do not exceed stock. |
 | VCNL4200 | add `vdd-supply = <&pm8953_l10>`, `vddio-supply = <&pm8953_l6>` | `proximity-light/ANALYSIS.md` §5 | `devm_regulator_bulk_get` fails on a missing supply, so the node cannot probe at all today. Node stays `disabled` until the LED-current patch lands. |

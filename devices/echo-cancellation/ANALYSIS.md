@@ -48,7 +48,7 @@ Stock cancels echo on the **ADSP**: `persist.vendor.audio.fluence.speaker=true` 
 - Unlocked clocks make the filter slowly diverge; symptoms look like "AEC works for a minute then breaks".
 - Adding latency to make AEC comfortable hurts the wake-word response and the perceived call quality.
 - Software AEC on 8 A53 cores competes directly with the recognizer and the compositor — the whole system can end up too slow.
-- There is no hardware mic mute on this unit (measured), so a muted-but-live stream is the normal state — AEC keeps running while nothing is audible to the user.
+- The hardware mic mute (left slider, GPIO 86) gives digital silence, not a stopped stream: AEC must cope with an all-zero near end while the slider is up.
 
 ## 8. Open questions
 

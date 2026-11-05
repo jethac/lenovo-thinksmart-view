@@ -41,7 +41,7 @@ Each item is checked on the device, not inferred from logs. `[x]` means verified
 | Echo cancellation | PipeWire / WebRTC AEC | Mic stays usable while the speaker plays | not started |
 | Camera | Samsung S5KC505A on CAMSS | Live preview and stills through libcamera | raw frames captured in three modes (driver `0401`-`0403`, sensor at I2C `0x37`); libcamera not started |
 | Camera privacy shutter | Switch | State is readable and the camera respects it | reads open; closed state not yet checked by hand |
-| Mic mute switch | Switch | State is readable and capture is muted in hardware or by policy | **not fitted on this unit** (measured: the only switch is the lens cover, and it does not mute the mics) |
+| Mic mute switch | Switch | State is readable and capture is muted in hardware or by policy | **hardware mute, measured 2026-11-06**: slider up = GPIO 86 high = digital silence; state readable as `SW_MICROPHONE_INSERT`; UI indication in progress |
 | Buttons | Power, Volume +/- | Input events; volume keys wake the screen | volume keys present; **no power button on this unit**; events not yet tested by hand |
 | Proximity / light | Vishay VCNL4200 | Wakes the screen; ambient light drives brightness. IR LED never left on at full power | disabled on purpose until the driver can limit the IR LED |
 | Accelerometer | Bosch BMA253 | Auto-rotation | working: the idle screen keeps the logo level |
@@ -130,4 +130,4 @@ Answered:
 - The `ath10k` rekey patch is still needed on 7.3: no upstream fix (`0101`).
 - CAMSS for MSM8953 is enough for the S5KC505A: raw frames captured with only a sensor driver and board nodes.
 - The Adreno 506 does not help Qwen3-ASR: about 14 GFLOP/s FP32 in OpenGL ES 3.1 compute, half the CPU Q8_0 rate; no OpenCL, no Vulkan (`streams/gpu-compute/NOTES.md`).
-- Switches: the lens cover is GPIO 87 (`SW_CAMERA_LENS_COVER`); the mic mute switch is not fitted on this unit.
+- Switches: the lens cover is GPIO 87 (`SW_CAMERA_LENS_COVER`); the mic mute slider is GPIO 86 (`SW_MICROPHONE_INSERT`, 0 = muted) and mutes in hardware.

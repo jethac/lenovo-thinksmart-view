@@ -36,7 +36,7 @@ The array is a **single-line stereo DMIC**: DMIC clock on GPIO 89 (`dmic0_clk`),
 - The live pads are owned by `c051000.sound` but muxed as plain `gpio`, not `dmic0_clk`/`dmic0_data` — that is the state left by the card's current (speaker) pinctrl selection, and must switch on first capture.
 - No gains set anywhere: mainline defaults are whatever the codec resets to, not stock's DEC 115.
 - Fluence is not usable without the ADSP; AEC/NS has to come from PipeWire/WebRTC (see `../echo-cancellation/`).
-- **There is no hardware mute provider.** Measured 2026-10-30: the only switch on the unit is the camera shutter and it does not affect capture (`../privacy-switches/`), so muting is purely a software policy here.
+- **There is a hardware mute.** The left-edge slider (GPIO 86) gives digital silence in its top position (measured 2026-11-06, `../privacy-switches/`). An earlier note here said there was none; that test flipped only the camera shutter.
 
 ## 6. Gap and plan
 
@@ -59,7 +59,7 @@ The array is a **single-line stereo DMIC**: DMIC clock on GPIO 89 (`dmic0_clk`),
 - Are both mics really on one data line, or is the second one on another `dmic*_data` pin not modelled?
 - What is Lenovo's ACDB calibration for this array, and is any of it usable without the ADSP?
 - How far apart are the mics, and is the array end-fire (top edge) or broadside?
-- With no hardware mute, should the desktop expose a mic-mute toggle that is enforced in PipeWire?
+- Should the desktop also expose a software mic-mute toggle, beside the hardware slider?
 
 ## 9. Sources
 

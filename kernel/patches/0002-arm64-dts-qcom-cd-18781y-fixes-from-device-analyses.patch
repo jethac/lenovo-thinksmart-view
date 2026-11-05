@@ -1,18 +1,6 @@
 --- a/arch/arm64/boot/dts/qcom/apq8053-lenovo-cd-18781y.dts
 +++ b/arch/arm64/boot/dts/qcom/apq8053-lenovo-cd-18781y.dts
-@@ -43,8 +43,9 @@
- 
- 		/*
- 		 * There currently isn't a good way to model a binary microphone mute
--		 * switch. It is a hardware mute switch though, so mics will be muted
--		 * even though it is not reflected in UI.
-+		 * switch. On some units it is a hardware mute switch. On HUA0BMNX it
-+		 * is not fitted: the only switch present is the lens cover above, and
-+		 * it does not mute the microphones (measured 2026-10-30).
- 		 */
- 		mic-mute-swtich {
- 			label = "Mic Mute";
-@@ -98,6 +99,8 @@
+@@ -98,6 +98,8 @@
  		light-sensor@51 {
  			compatible = "vishay,vcnl4200";
  			reg = <0x51>;
@@ -21,7 +9,7 @@
  
  			interrupt-parent = <&tlmm>;
  			interrupts = <43 IRQ_TYPE_EDGE_RISING>;
-@@ -196,7 +199,7 @@
+@@ -196,7 +198,7 @@
  	status = "okay";
  
  	panel: panel@0 {
@@ -30,7 +18,7 @@
  		reg = <0>;
  
  		pinctrl-names = "default", "sleep";
-@@ -285,7 +288,9 @@
+@@ -285,7 +287,9 @@
  		touchscreen-size-x = <800>;
  		touchscreen-size-y = <1280>;
  
@@ -41,7 +29,7 @@
  	};
  
  	hx83100a_ts: touchscreen@48 {
-@@ -349,6 +354,15 @@
+@@ -349,6 +353,15 @@
  	qcom,current-limit-microamp = <20000>;
  	qcom,external-pfet;
  
@@ -57,7 +45,7 @@
  	status = "okay";
  };
  
-@@ -718,5 +732,8 @@
+@@ -718,5 +731,8 @@
  };
  
  &usb3 {

@@ -49,7 +49,7 @@ Claimed TLMM pins on stock, which is a direct map of what hardware actually uses
 | 68 | `1-0049` (TAS5782M) | amp enable |
 | 75,77 | `7864900.sdhci` | Wi-Fi SDIO power/CLK-req |
 | 76 | pinctrl hog | BT_EN |
-| 85,86,87 | `soc:gpio_keys` | vol_up / mute (unpopulated) / camera shutter |
+| 85,86,87 | `soc:gpio_keys` | vol_up / mic mute (hardware) / camera shutter |
 | 88-93 | `c051000.sound` pri_mi2s | amp I2S |
 | 100 | mdss_dsi_ctrl0 | panel ext_vdd / bklight-en |
 | 135-138 | `c051000.sound` sec_mi2s | DMIC |
