@@ -213,3 +213,71 @@ Seen on the grabs: the room in the preview looks turned 90 degrees. The camera n
 - Whether a photo taken from Idle should open the listening window (it does now) or wait for the wake word.
 - Whether "take a photo" said alone should also be acknowledged aloud (it is not: the countdown on screen is the acknowledgement).
 - The image build: the same two files as before from `photo`; `libjpeg-turbo` is already in the image.
+
+## Clips and the empty replies (2026-11-05)
+
+straylight-voice branch `clips` (on `photo`): `2ae2bc3` (ai& client), `1809c41` (screen), `7ee3781` (listener), `408ebc8`, `22b0285` (READMEs). Goal: `streams/multimodal/GOAL.md` section 4, "Video" (the "show me" part; change-based sampling is the camera stream's `tsvsel`).
+
+### Empty replies from ai&: ours, fixed
+
+`Unexpected answer from api.aiand.com: an empty reply` (9 of 50 in the photo measurement, with and without images) came from `max_tokens`. The listener sent none, so the ai& client used its default of 400, and `meta/muse-spark-open` counts its reasoning against it. The client now logs the finish reason, the reasoning streamed and the usage of every reply. Text only, the listener's own system prompt, 30 short questions in English, Japanese and Mandarin, twice each:
+
+| `max_tokens` | Replies | Empty | Cut short | Completion tokens (median / 90 % / most) |
+| --- | --- | --- | --- | --- |
+| 400 | 60 | 3 (finish `length`, all 400 tokens on 1460-1826 characters of reasoning) | 1 (finish `length` at 400) | 135 / 280 / 400 |
+| 1500 | 60 | 0 | 0 (all finish `stop`) | 129 / 328 / 576 |
+
+Latency (mean 625 against 642 ms), language, prompt and time made no difference: the empty ones are the replies whose reasoning ran long. Not the streaming parse (reasoning arrived, then `finish_reason: length`, then the usage), not a timeout. Fix: the default is 1500 (16..4000), the listener asks for 1500 for replies, image descriptions and summaries, and a reply that ends at the limit with no answer is asked for once more with three times the room. Check after the fix, 60 at 400 and 60 at the default: 120 of 120 answered; the three at 400 that ran out were retried (1200) and answered, about 1 s more.
+
+### Clips ("show me")
+
+- **Button** left of the photo button (videocam icon) on Idle, Listening, Captions and Followup; **voice**: "look at this", "watch this", "watch me", "take a video", 見て, これ見て, 看这个, 你看这个 and a few close variants, under the same rules as "take a photo" (start of the request, then nothing, a sentence break or "and").
+- **Recording** starts at once: the camera opens (red frame round the screen, "Camera on: starting" for the 1 s exposure settles, then "Recording" with the seconds left and a red bar); a tap anywhere stops early and keeps what was recorded; Cancel drops it. The camera-on frame now stays until the capture thread has actually closed the camera (also for a cancelled photo).
+- **Frames**: tsvcam's binned readout at 490x652, sampled at 6 fps, kept by change (`tsvsel`, threshold 0.12, a heartbeat each second, at most `clip_frames`), encoded on Venus and written as an MP4 in memory (stopped before 1100 KiB). The loop is `tsvcam_clip()`'s (straylight-voice `camera/clip.c`) with an early stop and a synthetic frame source; the encoder is ended only through the library's own finish and close (no extra `STREAMOFF`). tsvcam copied again from `streams/camera/tsvcam/` (hashes in straylight-voice `camera/SOURCE`), unchanged.
+- **To the model**: a `video_url` part with a text part before it: "A short video the user just recorded with the tablet's camera: N frames, kept where something changed, taken at 0.0, 1.0, 2.0 ... s over 4.2 s of real time. In the video they follow one another every 0.50 s, so judge timing and speed by these times." After its turn the model describes it (what it shows and what happens) and the description replaces it in the history. A clip that cannot be recorded gets a spoken line ("The lens cover is closed, so I can't see." / "I couldn't record the video.").
+
+### What ai& does with a video, and the defaults
+
+Measured on the tablet (`tools/clip-measure.sh`, synthetic scenes from straylight-voice `src/scenes.rs` drawn at 490x652 through the same selection, Venus encoder and MP4 writer; no captures):
+
+- ai& samples a video at about 2 frames a second and the model sees consecutive samples merged in pairs (about 260 prompt tokens per pair). With the kept frames packed 1/6 s apart (the camera stream's proposal) most are never sampled: a 5-frame clip (0.8 s) was "a single still image" in 6 of 6 scenes. A counter clip (8 frames, one digit each) cost 713, 973 and 1493 prompt tokens at 167, 250 and 500 ms spacing, and no more at 750-1500 ms (identical consecutive samples are not counted); at 1 s spacing the model reported "four frames at 0, 2, 4 and 6 s". So the kept frames go **500 ms apart** in the MP4: each is sampled once, at about 130 tokens a frame.
+- Frames that change detail between neighbours (the counter) are still blended across a pair: the digits were misread at every setting. For reading, a photo.
+
+Six scenes (nothing moving, a hand waving three times from 0.5 to 5 s, a ball rolling left to right over 4 s, a mug appearing at 2.5 s, a counter, a traffic light green / yellow at 1.7 s / red at 3.3 s), two rounds each, 500 ms spacing:
+
+| Window : max frames | Prompt tokens | Largest MP4 | Kept frames (still / motion) | Answers right (of 12) |
+| --- | --- | --- | --- | --- |
+| 3 s : 30 | 670-2303 | 652 KB | 3 / 15 | 8: still 2, ball 2, light 2 (green to yellow: red comes after 3 s), hand 1, mug 1 (once at the wrong time, once "a single still photo"), counter 0 |
+| **5 s : 15** | **940-2298** | **585 KB** | **5 / 14** | **10: all but the counter** (hand "two full trips and a third started", right for 4.7 s) |
+| 5 s : 30 | 940-3378 | 1092 KB (stopped by the byte budget) | 5 / 22 | 10, the same answers as 5 : 15 |
+| 8 s : 30 | 1475-2573 | 772 KB | 8 / 17 | 10, and the hand's three trips counted |
+
+Default: **5 s, at most 15 frames, 500 ms apart** (`clip_length`, `clip_frames`, `clip_spacing` in `/etc/straylight-screen.conf`): as good as 30 frames for 2/3 of the tokens and half the bytes; 8 s sees longer actions but keeps the user waiting 9 s and costs about 10 % more. Encoding: 0.2-0.45 s of CPU per synthetic clip including drawing it.
+
+On the camera (2026-11-05, office at night, nobody in view): 32 frames seen, 5 kept (heartbeats; scores 0.027-0.039 against 0.12), 39 KB, 2.5 s of video, 6.1 s wall, 0.93 s CPU, 24 MiB peak, drain 1.7 ms. Copy on the Shared partition (`lenovo-8-captures/clip/`), deleted on the tablet.
+
+### Tests
+
+- straylight-voice 34 tests (the headless flow test now also records a clip from files: `recording` event, `photo_data` with kind `clip`, frame times and spacing, early stop, cancel), straylight-listen 27 (clip phrases: 9 that match, 6 that must not; clip note and video parts; description after the turn; the clip event), straylight-aiand 9 (the SSE parse keeps finish reason and reasoning).
+- Laptop end to end (`tools/photo-e2e.sh` with `CLIP=` a synthetic clip and the echo responder): "Hey Straylight, look at this. What am I doing?" (recorded, sent with the question, cleared after the turn), and the video button pressed in Idle then "What is the hand doing?" in the window it opened.
+
+### Device (2026-11-05/06, boot `c718b71c` throughout, each session under the lock with the boot ID checked before and after)
+
+1. ai& client deployed for the empty-reply runs: `/usr/local/bin/straylight-aiand` from `2ae2bc3` (`10d82be3…`), backup `straylight-aiand.pre-clips`; restarted, active.
+2. Clip measurements above (synthetic only) and one camera clip (not sent).
+3. **Deployed** `straylight-voice` (`22b0285`, `06a0ce23…`) and `straylight-listen` (`22b0285`, asr,tts, `91778698…`); backups `*.pre-clips` (the `photo` builds). Both active 2 s after the restart, recogniser ready after 9 s, voices after 13 s. `findmnt /boot` checked first.
+4. **Live end-to-end check, the one real capture sent to ai&**: the installed listener on a synthesised "Hey Straylight, look at this. What am I doing?" (file input, `--no-tts`, nothing played; the listener service stopped for 52 s) talking to an off-screen screen instance that recorded with the camera. Sent to ai&: a 5 s clip of the office at night (5 frames, 39 KB: ceiling lights, shelves, chairs and a monitor whose picture is unreadable at that size; nobody in view) and the question "What aid am I doing?" (the recogniser's reading). 939 prompt tokens. Reply: "I can't see you in the video, only what looks like a room with lights and a ceiling fan, so I can't tell what you are doing." Then the window opened and closed in silence, and the clip was cleared on both sides. Services active afterwards.
+
+As with the photo preview, the camera's frames show the room turned 90 degrees (ceiling lights along one side): the orientation needs a look with the tablet on its stand.
+
+### Left on the device
+
+- `/usr/local/bin/straylight-voice`, `straylight-listen` and `straylight-aiand` from `clips` (above); backups `*.pre-clips`. To roll back: install the three backups and restart the three services.
+- `/var/tmp/clip-test/` (40 MB): test binaries, the measuring script, 48 synthetic clips with their logs, a synthesised test WAV. No captures. `/var/tmp/photo-test/` (55 MB) as before. Remove with `rm -rf /var/tmp/clip-test /var/tmp/photo-test`.
+
+### Open
+
+- Orientation of photos and clips (90 degrees, above).
+- `tsvcam_clip()` has no way to stop early; `camera/clip.c` carries its loop to get one. A stop flag in `tsvcam_clip_opts` (and a frame-source hook for tests) would let the app call the library directly.
+- Counters, screens and text that change between frames are not readable from a clip (pairs of samples are merged by ai&); whether to send a photo alongside a clip for questions about text.
+- The 8 s window sees longer actions; 5 s is the default for the wait. A user's view on the length.
