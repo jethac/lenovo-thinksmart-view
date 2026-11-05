@@ -1,0 +1,50 @@
+From: Jetha Chan <jetha@splatterfacegames.com>
+Subject: [PATCH] media: venus: venc: encode the requested frame size by default
+
+venc_try_fmt_common() rounds width up to 128 and height up to 32; for the
+raw OUTPUT format that is the buffer layout the firmware expects (luma
+stride and scanlines, chroma plane offset). venc_s_fmt() also used the
+rounded values as the frame size given to the firmware
+(HFI_PROPERTY_PARAM_FRAME_SIZE) and as the crop rectangle, so a client
+that sets no crop gets the padding encoded: firmware log for a 1280x720
+request on MSM8953:
+
+  SET_PROPERTY: FRAME_SIZE: ebufferType=1, nWidth=1280, nHeight=736
+  frameWidthCoded: 1280 frameHeightCoded: 736
+
+and a 490x652 camera frame would be coded as 512x672.
+
+Keep the rounded format for the buffer layout and make the requested
+size, clamped and made even, the frame size and the default crop
+rectangle. VIDIOC_S_SELECTION still sets any smaller crop.
+
+Tested on MSM8953 (Lenovo ThinkSmart View) with v4l2-ctl: requests of
+1280x720, 490x652, 980x1304 and 1304x980 give streams of exactly that
+size; a decoded 490x652 frame matches its source.
+
+Signed-off-by: Jetha Chan <jetha@splatterfacegames.com>
+---
+diff --git a/drivers/media/platform/qcom/venus/venc.c b/drivers/media/platform/qcom/venus/venc.c
+index eff5e230b..77e08dad4 100644
+--- a/drivers/media/platform/qcom/venus/venc.c
++++ b/drivers/media/platform/qcom/venus/venc.c
+@@ -290,6 +290,19 @@ static int venc_s_fmt(struct file *file, void *fh, struct v4l2_format *f)
+ 	inst->width = format.fmt.pix_mp.width;
+ 	inst->height = format.fmt.pix_mp.height;
+ 
++	/*
++	 * The alignment applied by venc_try_fmt_common() describes the
++	 * buffer layout (stride and scanlines of the raw frame). Encode the
++	 * size the client asked for: it is the default crop rectangle, and
++	 * VIDIOC_S_SELECTION can still change it.
++	 */
++	inst->width = min_t(u32, inst->width,
++			    ALIGN(clamp(orig_pixmp.width, frame_width_min(inst),
++					frame_width_max(inst)), 2));
++	inst->height = min_t(u32, inst->height,
++			     ALIGN(clamp(orig_pixmp.height, frame_height_min(inst),
++					 frame_height_max(inst)), 2));
++
+ 	if (f->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE)
+ 		inst->fmt_out = fmt;
+ 	else if (f->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {

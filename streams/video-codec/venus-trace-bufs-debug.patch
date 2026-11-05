@@ -1,0 +1,143 @@
+diff --git a/drivers/media/platform/qcom/venus/core.c b/drivers/media/platform/qcom/venus/core.c
+index e040397ac..6bed40012 100644
+--- a/drivers/media/platform/qcom/venus/core.c
++++ b/drivers/media/platform/qcom/venus/core.c
+@@ -1236,4 +1236,9 @@ static struct platform_driver qcom_venus_driver = {
+ module_platform_driver(qcom_venus_driver);
+ 
+ MODULE_DESCRIPTION("Qualcomm Venus video encoder and decoder driver");
++bool venus_trace;
++EXPORT_SYMBOL_GPL(venus_trace);
++module_param_named(trace, venus_trace, bool, 0644);
++MODULE_PARM_DESC(trace, "debug: log buffer traffic and firmware messages");
++
+ MODULE_LICENSE("GPL v2");
+diff --git a/drivers/media/platform/qcom/venus/core.h b/drivers/media/platform/qcom/venus/core.h
+index 24973c008..277e9d133 100644
+--- a/drivers/media/platform/qcom/venus/core.h
++++ b/drivers/media/platform/qcom/venus/core.h
+@@ -31,6 +31,8 @@
+ #define VENUS_MAX_FPS			240
+ 
+ extern int venus_fw_debug;
++extern bool venus_trace;
++
+ 
+ struct freq_tbl {
+ 	unsigned int load;
+diff --git a/drivers/media/platform/qcom/venus/helpers.c b/drivers/media/platform/qcom/venus/helpers.c
+index cf3a4668f..50fc78a3a 100644
+--- a/drivers/media/platform/qcom/venus/helpers.c
++++ b/drivers/media/platform/qcom/venus/helpers.c
+@@ -532,6 +532,12 @@ session_process_buf(struct venus_inst *inst, struct vb2_v4l2_buffer *vbuf)
+ 		fdata.offset = 0;
+ 	}
+ 
++	if (venus_trace)
++		dev_info(inst->core->dev, "%s qbuf %s idx %u addr 0x%x alloc %u filled %u off %u flags 0x%x\n",
++			 inst->session_type == VIDC_SESSION_TYPE_ENC ? "enc" : "dec",
++			 V4L2_TYPE_IS_OUTPUT(type) ? "in " : "out", fdata.clnt_data, fdata.device_addr,
++			 fdata.alloc_len, fdata.filled_len, fdata.offset, fdata.flags);
++
+ 	return hfi_session_process_buf(inst, &fdata);
+ }
+ 
+@@ -1371,6 +1377,8 @@ static void delayed_process_buf_func(struct work_struct *work)
+ 		if (buf->flags & HFI_BUFFERFLAG_READONLY)
+ 			continue;
+ 
++		if (venus_trace)
++			dev_info(inst->core->dev, "resend idx %u\n", buf->vb.vb2_buf.index);
+ 		ret = session_process_buf(inst, &buf->vb);
+ 		if (ret)
+ 			return_buf_error(inst, &buf->vb);
+@@ -1385,6 +1393,8 @@ void venus_helper_release_buf_ref(struct venus_inst *inst, unsigned int idx)
+ {
+ 	struct venus_buffer *buf;
+ 
++	if (venus_trace)
++		dev_info(inst->core->dev, "release ref idx %u\n", idx);
+ 	list_for_each_entry(buf, &inst->registeredbufs, reg_list) {
+ 		if (buf->vb.vb2_buf.index == idx) {
+ 			buf->flags &= ~HFI_BUFFERFLAG_READONLY;
+@@ -1408,6 +1418,8 @@ static int is_buf_refed(struct venus_inst *inst, struct vb2_v4l2_buffer *vbuf)
+ 	struct venus_buffer *buf = to_venus_buffer(vbuf);
+ 
+ 	if (buf->flags & HFI_BUFFERFLAG_READONLY) {
++		if (venus_trace)
++			dev_info(inst->core->dev, "park idx %u\n", vbuf->vb2_buf.index);
+ 		list_add_tail(&buf->ref_list, &inst->delayed_process);
+ 		schedule_work(&inst->delayed_process_work);
+ 		return 1;
+diff --git a/drivers/media/platform/qcom/venus/hfi_msgs.c b/drivers/media/platform/qcom/venus/hfi_msgs.c
+index 5c2025c5a..6621e72d0 100644
+--- a/drivers/media/platform/qcom/venus/hfi_msgs.c
++++ b/drivers/media/platform/qcom/venus/hfi_msgs.c
+@@ -170,6 +170,9 @@ static void event_release_buffer_ref(struct venus_core *core,
+ 	data = (struct hfi_msg_event_release_buffer_ref_pkt *)
+ 		pkt->ext_event_data;
+ 
++	if (venus_trace)
++		dev_info(core->dev, "release event packet 0x%x extradata 0x%x tag 0x%x\n",
++			 data->packet_buffer, data->extradata_buffer, data->output_tag);
+ 	event.event_type = HFI_EVENT_RELEASE_BUFFER_REFERENCE;
+ 	event.packet_buffer = data->packet_buffer;
+ 	event.extradata_buffer = data->extradata_buffer;
+diff --git a/drivers/media/platform/qcom/venus/hfi_venus.c b/drivers/media/platform/qcom/venus/hfi_venus.c
+index bd82066bb..28143afd3 100644
+--- a/drivers/media/platform/qcom/venus/hfi_venus.c
++++ b/drivers/media/platform/qcom/venus/hfi_venus.c
+@@ -996,7 +996,10 @@ static void venus_flush_debug_queue(struct venus_hfi_device *hdev)
+ 		if (pkt->hdr.pkt_type != HFI_MSG_SYS_COV) {
+ 			struct hfi_msg_sys_debug_pkt *pkt = packet;
+ 
+-			dev_dbg(dev, VDBGFW "%s", pkt->msg_data);
++			if (venus_trace)
++				dev_info(dev, "fw: %s", pkt->msg_data);
++			else
++				dev_dbg(dev, VDBGFW "%s", pkt->msg_data);
+ 		}
+ 	}
+ }
+diff --git a/drivers/media/platform/qcom/venus/vdec.c b/drivers/media/platform/qcom/venus/vdec.c
+index 2271bbf89..d17f068a8 100644
+--- a/drivers/media/platform/qcom/venus/vdec.c
++++ b/drivers/media/platform/qcom/venus/vdec.c
+@@ -1466,6 +1466,10 @@ static void vdec_buf_done(struct venus_inst *inst, unsigned int buf_type,
+ 		type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+ 
+ 	vbuf = venus_helper_find_buf(inst, type, tag);
++	if (venus_trace)
++		dev_info(inst->core->dev, "dec done %s tag %u bytes %u flags 0x%x hfi 0x%x ts %llu%s\n",
++			 buf_type == HFI_BUFFER_INPUT ? "in " : "out", tag, bytesused, flags, hfi_flags,
++			 timestamp_us, vbuf ? "" : " MISS");
+ 	if (!vbuf) {
+ 		if (type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE &&
+ 		    flags & V4L2_BUF_FLAG_LAST)
+diff --git a/drivers/media/platform/qcom/venus/venc.c b/drivers/media/platform/qcom/venus/venc.c
+index 77e08dad4..df89e6def 100644
+--- a/drivers/media/platform/qcom/venus/venc.c
++++ b/drivers/media/platform/qcom/venus/venc.c
+@@ -1283,6 +1283,11 @@ static int venc_start_streaming(struct vb2_queue *q, unsigned int count)
+ 	}
+ 
+ 	venus_helper_init_instance(inst);
++	if (venus_trace)
++		dev_info(inst->core->dev, "enc start %ux%u out %ux%u fmt %p4cc->%p4cc in_size %u out_size %u fps %u\n",
++			 inst->width, inst->height, inst->out_width, inst->out_height,
++			 &inst->fmt_out->pixfmt, &inst->fmt_cap->pixfmt, inst->input_buf_size,
++			 inst->output_buf_size, (u32)inst->fps);
+ 
+ 	inst->sequence_cap = 0;
+ 	inst->sequence_out = 0;
+@@ -1382,6 +1387,10 @@ static void venc_buf_done(struct venus_inst *inst, unsigned int buf_type,
+ 		type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+ 
+ 	vbuf = venus_helper_find_buf(inst, type, tag);
++	if (venus_trace)
++		dev_info(inst->core->dev, "enc done %s tag %u bytes %u flags 0x%x hfi 0x%x ts %llu%s\n",
++			 buf_type == HFI_BUFFER_INPUT ? "in " : "out", tag, bytesused, flags, hfi_flags,
++			 timestamp_us, vbuf ? "" : " MISS");
+ 	if (!vbuf)
+ 		return;
+ 

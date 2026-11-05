@@ -1,0 +1,52 @@
+From: Jetha Chan <jetha@splatterfacegames.com>
+Subject: [PATCH] avcodec/v4l2_m2m_dec: don't drop a pending packet while the capture queue is not set up
+
+v4l2_receive_frame() keeps a packet in s->buf_pkt when the OUTPUT queue
+is full (enqueue returns EAGAIN). It then calls v4l2_try_start(), which
+fails while VIDIOC_G_FMT(CAPTURE) is refused because the decoder has not
+yet parsed the stream headers, and the error path unrefs s->buf_pkt: the
+packet is lost.
+
+On Qualcomm Venus (MSM8953) the firmware may take more than the 16 OUTPUT
+buffers before it raises the source change, so packets 16 onwards were
+dropped: 2 to 7 frames missing at the start of 1080p H.264 streams, and
+with a P-only stream every following frame corrupt until the next IDR.
+
+Wait instead, while a packet is held and CAPTURE is not streaming: retry
+v4l2_try_start() and poll through ff_v4l2_context_dequeue_frame(), which
+handles the source change event, until the packet can be queued or the
+CAPTURE queue is up (bounded at about 5 s). Returning EAGAIN instead is not
+an option: the packet stays held, avcodec_send_packet() then returns EAGAIN
+and the ffmpeg CLI aborts ("A decoder returned an unexpected error code").
+---
+diff --git a/libavcodec/v4l2_m2m_dec.c b/libavcodec/v4l2_m2m_dec.c
+index ba1fe76..f7c8956 100644
+--- a/libavcodec/v4l2_m2m_dec.c
++++ b/libavcodec/v4l2_m2m_dec.c
+@@ -154,6 +154,26 @@ static int v4l2_receive_frame(AVCodecContext *avctx, AVFrame *frame)
+         goto dequeue;
+ 
+     ret = ff_v4l2_context_enqueue_packet(output, &s->buf_pkt);
++    if (ret == AVERROR(EAGAIN) && !capture->streamon) {
++        /*
++         * All OUTPUT buffers are queued and the CAPTURE queue cannot be set
++         * up until the driver has parsed the headers and signalled a source
++         * change. Wait here for that event (handled by the dequeue below)
++         * or a free OUTPUT buffer instead of returning: v4l2_try_start()
++         * would fail and the packet held in s->buf_pkt would be dropped.
++         */
++        for (int i = 0; i < 50 && ret == AVERROR(EAGAIN) && !capture->streamon; i++) {
++            int r = v4l2_try_start(avctx);
++            if (r == AVERROR(ENOMEM))
++                goto fail;
++            if (!r && capture->streamon)
++                break;
++            r = ff_v4l2_context_dequeue_frame(capture, frame, 100);
++            if (!r)
++                return 0;
++            ret = ff_v4l2_context_enqueue_packet(output, &s->buf_pkt);
++        }
++    }
+     if (ret < 0 && ret != AVERROR(EAGAIN))
+         goto fail;
+ 

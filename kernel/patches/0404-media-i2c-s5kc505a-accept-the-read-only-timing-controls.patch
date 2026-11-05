@@ -1,0 +1,30 @@
+From: Jetha Chan <jetha@splatterfacegames.com>
+Subject: [PATCH] media: i2c: s5kc505a: accept the read-only timing controls
+
+A mode change updates HBLANK through __v4l2_ctrl_modify_range(), which
+calls s_ctrl. If the sensor is still runtime active (within the 1 s
+autosuspend delay after a stream), s_ctrl reached the default case and
+returned -EINVAL, so VIDIOC_SUBDEV_S_FMT failed after the mode had
+already been switched, and the VBLANK and EXPOSURE ranges were left at
+the old mode's values. Treat HBLANK, PIXEL_RATE and LINK_FREQ as no-ops
+in s_ctrl.
+
+diff --git a/drivers/media/i2c/s5kc505a.c b/drivers/media/i2c/s5kc505a.c
+--- a/drivers/media/i2c/s5kc505a.c
++++ b/drivers/media/i2c/s5kc505a.c
+@@ -547,6 +547,15 @@
+ 		ret = cci_write(s5kc505a->regmap, S5KC505A_REG_TEST_PATTERN,
+ 				ctrl->val, NULL);
+ 		break;
++	case V4L2_CID_HBLANK:
++	case V4L2_CID_PIXEL_RATE:
++	case V4L2_CID_LINK_FREQ:
++		/*
++		 * Read-only, follow the mode; set_pad_format updates them
++		 * and can do so while the sensor is still runtime active.
++		 */
++		ret = 0;
++		break;
+ 	default:
+ 		ret = -EINVAL;
+ 		break;

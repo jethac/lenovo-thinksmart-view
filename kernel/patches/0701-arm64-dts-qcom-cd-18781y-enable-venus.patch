@@ -1,0 +1,21 @@
+From: Jetha Chan <jetha@splatterfacegames.com>
+Subject: [PATCH] arm64: dts: qcom: apq8053-lenovo-cd-18781y: enable Venus
+
+Enable the video codec with the board's own signed firmware, installed
+from the device's modem partition under qcom/msm8953/lenovo/cd-18781y/.
+
+diff --git a/arch/arm64/boot/dts/qcom/apq8053-lenovo-cd-18781y.dts b/arch/arm64/boot/dts/qcom/apq8053-lenovo-cd-18781y.dts
+index 2b32d64ee..fbf37e1ff 100644
+--- a/arch/arm64/boot/dts/qcom/apq8053-lenovo-cd-18781y.dts
++++ b/arch/arm64/boot/dts/qcom/apq8053-lenovo-cd-18781y.dts
+@@ -952,3 +952,10 @@ &usb3 {
+ 
+ 	status = "okay";
+ };
++
++&venus {
++	/* Signed for this board; loaded from the device's own modem partition. */
++	firmware-name = "qcom/msm8953/lenovo/cd-18781y/venus.mdt";
++
++	status = "okay";
++};

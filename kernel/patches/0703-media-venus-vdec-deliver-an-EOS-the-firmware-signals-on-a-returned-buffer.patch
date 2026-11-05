@@ -1,0 +1,149 @@
+From: Jetha Chan <jetha@splatterfacegames.com>
+Subject: [PATCH] media: venus: vdec: deliver an EOS the firmware signals on a returned buffer
+
+Decoding H.264 or HEVC with B-frames on MSM8953 (HFI 3xx, firmware
+VIDEO.VE.4.2-00078) never finished: the client issued V4L2_DEC_CMD_STOP
+and waited forever for a buffer with V4L2_BUF_FLAG_LAST.
+
+With buffer tracing the firmware is seen to decode the whole stream and
+emit every picture in display order, then to signal end of stream in an
+output-done message that reuses the tag of the buffer it has just
+returned (HEVC, 4 B-frames, 1080p, 300 frames):
+
+  dec qbuf out idx 0 ...
+  dec done out tag 0 bytes 3133440 flags 0x10 hfi 0x0 ts 9966667
+  dec done out tag 0 bytes 0 flags 0x100000 hfi 0x1 ts 0
+
+Buffer 0 is no longer on the m2m queue at that point, so
+venus_helper_find_buf() fails and vdec_buf_done() drops the message: the
+EOS event is not queued and the LAST flag never reaches the client.
+Streams without B-frames end with the EOS in a buffer the firmware still
+holds, which is why they were unaffected.
+
+When an EOS arrives for a capture buffer the driver does not hold, flush
+the firmware's output queue (non-blocking, from the message thread as
+vdec_event_change() does) and mark the first empty capture buffer that
+comes back as LAST. If the firmware holds none, the next capture buffer
+the client queues is returned as LAST, as already done after a
+resolution change.
+
+Tested on MSM8953 (Lenovo ThinkSmart View): H.264 Main 720p with 1
+B-frame, H.264 High 1080p with 3 and HEVC Main 1080p with 4 B-frames now
+decode 300/300 frames through ffmpeg h264_v4l2m2m/hevc_v4l2m2m, every
+frame bit-identical to ffmpeg's software decoder and in order, and the
+drain completes (5.2x real time for 1080p H.264, 0.27 s CPU per 10 s).
+Streams without B-frames are unchanged (300/300 bit-exact).
+
+Signed-off-by: Jetha Chan <jetha@splatterfacegames.com>
+---
+diff --git a/drivers/media/platform/qcom/venus/core.h b/drivers/media/platform/qcom/venus/core.h
+index 46705a666..24973c008 100644
+--- a/drivers/media/platform/qcom/venus/core.h
++++ b/drivers/media/platform/qcom/venus/core.h
+@@ -454,6 +454,8 @@ enum venus_inst_modes {
+  * @bit_depth:		current bitstream bit-depth
+  * @pic_struct:		bitstream progressive vs interlaced
+  * @next_buf_last: a flag to mark next queued capture buffer as last
++ * @last_buf_pending: the firmware signalled end of stream on a buffer it had
++ *		      already returned; the next empty capture buffer carries LAST
+  * @drain_active:	Drain sequence is in progress
+  * @flags:	bitmask flags describing current instance mode
+  * @dpb_ids:	DPB buffer ID's
+@@ -525,6 +527,7 @@ struct venus_inst {
+ 	unsigned int bit_depth;
+ 	unsigned int pic_struct;
+ 	bool next_buf_last;
++	bool last_buf_pending;
+ 	bool drain_active;
+ 	enum venus_inst_modes flags;
+ 	struct ida dpb_ids;
+diff --git a/drivers/media/platform/qcom/venus/vdec.c b/drivers/media/platform/qcom/venus/vdec.c
+index 3c29bb916..2271bbf89 100644
+--- a/drivers/media/platform/qcom/venus/vdec.c
++++ b/drivers/media/platform/qcom/venus/vdec.c
+@@ -1075,6 +1075,7 @@ static int vdec_start_capture(struct venus_inst *inst)
+ 	venus_pm_load_scale(inst);
+ 
+ 	inst->next_buf_last = false;
++	WRITE_ONCE(inst->last_buf_pending, false);
+ 
+ 	ret = venus_helper_alloc_dpb_bufs(inst);
+ 	if (ret)
+@@ -1146,6 +1147,7 @@ static int vdec_start_output(struct venus_inst *inst)
+ 	inst->sequence_out = 0;
+ 	inst->reconfig = false;
+ 	inst->next_buf_last = false;
++	WRITE_ONCE(inst->last_buf_pending, false);
+ 
+ 	ret = vdec_set_properties(inst);
+ 	if (ret)
+@@ -1395,6 +1397,22 @@ static void vdec_vb2_buf_queue(struct vb2_buffer *vb)
+ 		return;
+ 	}
+ 
++	if (V4L2_TYPE_IS_CAPTURE(vb->vb2_queue->type) &&
++	    xchg(&inst->last_buf_pending, false)) {
++		vbuf->flags |= V4L2_BUF_FLAG_LAST;
++		vbuf->sequence = inst->sequence_cap++;
++		vbuf->field = V4L2_FIELD_NONE;
++		vb2_set_plane_payload(vb, 0, 0);
++		v4l2_m2m_buf_done(vbuf, VB2_BUF_STATE_DONE);
++		v4l2_event_queue_fh(&inst->fh, &eos);
++		if (inst->codec_state == VENUS_DEC_STATE_DRAIN) {
++			inst->drain_active = false;
++			inst->codec_state = VENUS_DEC_STATE_STOPPED;
++		}
++		mutex_unlock(&inst->lock);
++		return;
++	}
++
+ 	venus_helper_vb2_buf_queue(vb);
+ 	mutex_unlock(&inst->lock);
+ }
+@@ -1409,6 +1427,28 @@ static const struct vb2_ops vdec_vb2_ops = {
+ 	.buf_queue = vdec_vb2_buf_queue,
+ };
+ 
++/*
++ * With B-frames the firmware can return the last picture and then signal
++ * end of stream with the tag of that same buffer, which the driver has
++ * already given back to the client. The EOS has no buffer to travel in,
++ * the client never sees V4L2_BUF_FLAG_LAST and a drain never completes.
++ * Ask the firmware for the capture buffers it still holds; the first one
++ * that comes back empty is marked LAST. If none comes back, the next
++ * capture buffer the client queues is returned as LAST
++ * (vdec_vb2_buf_queue()). This runs in the HFI message thread, which must
++ * not take inst->lock, hence the non-blocking flush.
++ */
++static void vdec_eos_on_returned_buf(struct venus_inst *inst)
++{
++	int ret;
++
++	WRITE_ONCE(inst->last_buf_pending, true);
++
++	ret = hfi_session_flush(inst, HFI_FLUSH_OUTPUT, false);
++	if (ret)
++		dev_dbg(inst->core->dev, VDBGH "flush output error %d\n", ret);
++}
++
+ static void vdec_buf_done(struct venus_inst *inst, unsigned int buf_type,
+ 			  u32 tag, u32 bytesused, u32 data_offset, u32 flags,
+ 			  u32 hfi_flags, u64 timestamp_us)
+@@ -1427,10 +1467,17 @@ static void vdec_buf_done(struct venus_inst *inst, unsigned int buf_type,
+ 
+ 	vbuf = venus_helper_find_buf(inst, type, tag);
+ 	if (!vbuf) {
++		if (type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE &&
++		    flags & V4L2_BUF_FLAG_LAST)
++			vdec_eos_on_returned_buf(inst);
+ 		venus_helper_change_dpb_owner(inst, vbuf, type, buf_type, tag);
+ 		return;
+ 	}
+ 
++	if (type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE && !bytesused &&
++	    !(flags & V4L2_BUF_FLAG_LAST) && xchg(&inst->last_buf_pending, false))
++		flags |= V4L2_BUF_FLAG_LAST;
++
+ 	vbuf->flags = flags;
+ 	vbuf->field = V4L2_FIELD_NONE;
+ 	vb = &vbuf->vb2_buf;

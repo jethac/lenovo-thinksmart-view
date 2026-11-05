@@ -1,0 +1,46 @@
+From: Jetha Chan <jetha@splatterfacegames.com>
+Subject: [PATCH] media: venus: helpers: leave slack after the NV12 chroma plane
+
+On MSM8953 (Venus firmware VIDEO.VE.4.2-00078) the encoder never consumed
+an input buffer unless the frame was 640x480. With firmware debug messages
+enabled every EmptyThisBuffer was refused:
+
+  venc_EmptyThisBuffer(7152): ETB offset size 0[--expected is less than -128]
+  or allocLen 1413120 [expected is greater than 1413248]
+
+that is, the firmware requires the buffer to extend at least 128 bytes
+past the NV12 planes. get_framesize_raw_nv12() returns the two planes
+rounded up to 4K, which is exact whenever the plane sizes are multiples
+of 4K: 1280x736 (1280x720 aligned), 1920x1088 and 512x640 all came out
+exact and failed; 640x480 has 2K of rounding slack in the chroma plane
+and worked. The input queue then stalls without an error, and V4L2
+clients (v4l2-ctl, ffmpeg h264_v4l2m2m) wait forever.
+
+Add 4K after the chroma plane before rounding. The same size is used for
+decoder capture buffers, which only grow by 4K.
+
+Tested on MSM8953 (Lenovo ThinkSmart View) with v4l2-ctl: H.264 encode
+now runs at 640x480, 1280x720, 1920x1080, 490x652, 980x1304 and 1304x980
+(30 frames each, valid streams of the requested size), and 60 camera
+frames each at 490x652 and 980x1304 (1.0 s and 2.0 s).
+
+Signed-off-by: Jetha Chan <jetha@splatterfacegames.com>
+---
+diff --git a/drivers/media/platform/qcom/venus/helpers.c b/drivers/media/platform/qcom/venus/helpers.c
+index 7c094009c..cf3a4668f 100644
+--- a/drivers/media/platform/qcom/venus/helpers.c
++++ b/drivers/media/platform/qcom/venus/helpers.c
+@@ -955,7 +955,12 @@ static u32 get_framesize_raw_nv12(u32 width, u32 height)
+ 
+ 	y_plane = y_stride * y_sclines;
+ 	uv_plane = uv_stride * uv_sclines;
+-	size = y_plane + uv_plane;
++	/*
++	 * The firmware rejects an input buffer that does not extend at least
++	 * 128 bytes past the end of the chroma plane, so never let the 4K
++	 * rounding come out exact.
++	 */
++	size = y_plane + uv_plane + SZ_4K;
+ 
+ 	return ALIGN(size, SZ_4K);
+ }

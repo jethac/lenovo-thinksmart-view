@@ -1,0 +1,29 @@
+diff --git a/libavcodec/v4l2_m2m_dec.c b/libavcodec/v4l2_m2m_dec.c
+index ba1fe76..49d0a19 100644
+--- a/libavcodec/v4l2_m2m_dec.c
++++ b/libavcodec/v4l2_m2m_dec.c
+@@ -22,6 +22,7 @@
+  */
+ 
+ #include <linux/videodev2.h>
++#include <stdlib.h>
+ #include <sys/ioctl.h>
+ #include "libavutil/pixfmt.h"
+ #include "libavutil/pixdesc.h"
+@@ -130,6 +131,16 @@ static int v4l2_prepare_decoder(V4L2m2mContext *s)
+         av_log(s->avctx, AV_LOG_WARNING,
+                "the v4l2 driver does not support end of stream VIDIOC_SUBSCRIBE_EVENT\n");
+ 
++    /* Test hook: ask the decoder for decode order (display delay 0). */
++    if (getenv("TSV_V4L2_DECODE_ORDER")) {
++        struct v4l2_control c = { .id = V4L2_CID_MPEG_VIDEO_DEC_DISPLAY_DELAY_ENABLE, .value = 1 };
++        int r1 = ioctl(s->fd, VIDIOC_S_CTRL, &c), r2;
++        c.id = V4L2_CID_MPEG_VIDEO_DEC_DISPLAY_DELAY;
++        c.value = 0;
++        r2 = ioctl(s->fd, VIDIOC_S_CTRL, &c);
++        av_log(s->avctx, AV_LOG_INFO, "decode order requested: %d %d\n", r1, r2);
++    }
++
+     return 0;
+ }
+ 
