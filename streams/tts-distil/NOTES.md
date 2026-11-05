@@ -8,19 +8,21 @@ Narrow Kokoro students (Kokoro-82M's own text side, an iSTFTNet decoder at 1/4 w
 
 | | en af_heart | ja jf_alpha*0.7+af_heart*0.3 | zh zf_xiaoni*0.7+af_heart*0.3 |
 | --- | --- | --- | --- |
-| UTMOS (teacher) | 4.40 (4.51) | 4.22 (4.39) | 3.81 (4.23) |
+| UTMOS (teacher) | 4.40 (4.51) | 4.26 (4.39); installed 4.22 | 3.81 (4.23) |
+| SHEET SSL-MOS (teacher), not English-only | 4.517 (4.575) | 4.648 (4.660) | 4.624 (4.646) |
 | WER / CER (teacher) | 0.8 % / 5.3 % (1.6 / 4.9) | CER 8.0 % (8.4) | CER 1.4 % (2.9) |
 | timbre: LTAS diff, MFCC dist (the tablet's Kokoro uint8) | 0.47 dB, 0.92 (0.82, 14.1) | 0.46 dB, 0.87 (1.52, 11.0) | 0.67 dB, 2.19 (0.83, 14.3) |
 | tablet RTF, speech path (Kokoro) | 0.58-0.62, median 0.60 (2.9-3.0) | 0.54-0.57 (2.95-3.15) | 0.54-0.55 (2.9) |
 | first audio | 0.93-1.73 s, median 1.40 | 1.08-1.51 s | 1.2-2.9 s (splitter) |
 | speech process peak RSS | 260 MiB | 291 MiB | 608 MiB with Kokoro en loaded too |
-| snapshot | stage 2 step 28,000 | stage 2 step 20,000 | stage 2 step 28,000 |
+| snapshot | stage 2 step 28,000 | stage 2 step 30,000 of a second run (`ja-alpha-v2`, not installed yet; installed: first run, step 20,000) | stage 2 step 28,000 |
 
 - Files (PGX `~/straylight-tts/export/narrow-<lang>-x25k2_s2-<step>-u8mm/`: `model.onnx`, `voice.bin`; packed for the tablet as `.ort` + `voice.bin`, 109 MB each, in this stream's `work/voices/{en-heart,ja-alpha,zh-xiaoni}/`, git-ignored). Checkpoints: PGX `~/straylight-tts/paradee/<lang>/checkpoints/narrow_x25k2_s1|_s2/` (every 2,000 steps).
 - Integration: straylight-voice branch `tts-distil-en` (worktree `/home/jethac/Projects/straylight-voice-distil-en`), `--tts-voice L=paradee:NAME`.
 - English was tried in the live service from tmpfs (2026-11-04 02:35-04:51 JST, the final voice from 04:00) and then put back: the root file system had too little room for a permanent install at the time (118 MB free; 238 MB when reverting, it moves as other streams work), and the deployed binary is a build this branch does not contain, so replacing it is for the integrator.
 - Matcha + Vocos (the original plan) is kept only as a fallback; no language needed it.
-- RunPod: $14.51 in all, no pods or volumes left ([RunPod](#runpod-from-2026-11-03)).
+- RunPod: $19.26 in all ($14.51 first round, $4.75 for the second Japanese run), no pods or volumes left ([RunPod](#runpod-from-2026-11-03)).
+- Second round (2026-11-04): [UniDic vs NAIST, the Mandarin gap, v1.1-zh, misaki input](#second-round-2026-11-04-japanese-front-end-mandarin-measures-and-teacher-misaki-input). In short: NAIST stays (a tie through the teacher, and UniDic needs 725 MB); the Japanese student was retrained through the whole stage 2 (UTMOS 4.26, a small gain); the Mandarin UTMOS gap is UTMOS's (on SHEET, a predictor trained with Mandarin data, the zh gap is 0.02, smaller than English's 0.06); v1.1-zh recognises better but is a different voice and needs a new front end, so it is proposed, not run; the students take Python misaki's phonemes with no loss of naturalness.
 
 Install (integrator): build straylight-voice `tts-distil-en` (merged with whatever the tablet runs now), copy a voice directory to `/usr/local/share/straylight-listen/paradee/NAME/` (`model.ort`, `voice.bin`; 109 MB each), and set `--tts-voice en=paradee:en-heart` (and `ja=paradee:ja-alpha`, `zh=paradee:zh-xiaoni`) in `/etc/straylight-listen.conf`. Room: about 110 MB per voice; the documented saving is the `.onnx` files kept next to their `.ort` (Kokoro uint8 177 MB, Matcha LJSpeech 74 + 54 MB). With all three languages on students, Kokoro (and its 177 + 178 MB of model files) is no longer needed at all unless kept as a fallback.
 
@@ -123,6 +125,107 @@ Held-out lines (23):
 - Pitch accent (`streams/tts/scripts/rt-accent.py`, the 4 minimal pairs): the teacher itself separates 0 of 4 (misaki's Japanese phonemes carry no accent marks, so Kokoro is given the same string for 雨 and 飴), the student 1 of 4; its F0 is the teacher's own predictor's, so this is parity within the noise of the check.
 - Tablet (speech path, 6 lines, MatMul uint8): RTF 0.54-0.57, first audio 1.08-1.51 s, gaps 0-0.18 s, peak RSS 291 MiB (speech process). Kokoro took RTF 2.95-3.15 and 5.9-12.3 s to first audio.
 
+## Second round (2026-11-04): Japanese front end, Mandarin measures and teacher, misaki input
+
+### A second quality measure: SHEET SSL-MOS
+
+UTMOS (`utmos22_strong`) is trained on English listening tests only (BVCC), so a Mandarin or Japanese gap on it may be the predictor's, not the voice's. Second measure: **SHEET's SSL-MOS** (`unilight/sheet` v0.1.0 through torch.hub, "default" = `all7-sslmos-mdf-2337`, MIT; trained on seven MOS corpora: BVCC, SOMOS, SingMOS, NISQA, PSTN and two Mandarin ones, TMHINT-QI and Tencent), `scripts/sheet-mos.py` (on the PGX in the training image; its extra packages h5py, humanfriendly, prettytable and s3prl 0.4.18 go in `~/straylight-tts/pylib-sheet` with `PYTHONPATH`; s3prl's hub imports are made tolerant there because some of its unrelated upstreams fail to import with torchaudio 2.8). Evaluation only, nothing of it is in any shipped model.
+
+It ranks the voices we have as UTMOS does, with a compressed top end (held-out lines):
+
+| Voice | UTMOS | SHEET |
+| --- | --- | --- |
+| en student, GAN-only x25 step 2,000 | 1.30 | 1.80 |
+| en student, GAN-only x25 step 10,000 | 2.72 | 3.22 |
+| Matcha LJSpeech + Vocos (retired) | 3.94 | 4.09 |
+| zh student, stage 2 step 4,000 / 12,000 / 28,000 (installed) | 3.43 / 3.71 / 3.81 | 4.37 / 4.57 / 4.62 |
+| ja student, stage 2 step 4,000 | 3.72 | 4.57 |
+
+Teacher against the installed students:
+
+| | teacher UTMOS / SHEET | student UTMOS / SHEET | gap UTMOS / SHEET |
+| --- | --- | --- | --- |
+| en af_heart | 4.51 / 4.575 | 4.40 / 4.517 | 0.11 / 0.058 |
+| ja (stage 2 step 20,000) | 4.39 / 4.660 | 4.22 / 4.645 | 0.17 / 0.015 |
+| zh (stage 2 step 28,000) | 4.23 / 4.646 | 3.81 / 4.624 | 0.42 / 0.022 |
+
+On the measure that has Mandarin in its training data, the Mandarin student is as close to its teacher as the English one (closer: 0.02 against 0.06), and per line it is within 0.06 of the teacher on all 23 held-out lines. So the 0.4 UTMOS gap is mostly UTMOS: it penalises something in the student's Mandarin that a predictor which has heard Mandarin does not. One seen line stands out: `zh-brand.seen` (欢迎来到ai&。我是ai&的助手，Straylight。) scores 3.66 against the teacher's 4.61 (every other line 4.58-4.66), worth a listen. The listening test is still to be done:
+
+**Blind A/B set** (for the user): `/run/media/jethac/Shared/tts-distil-zh-ab/` (`clips/NN-A.wav`, `NN-B.wav`: 10 held-out lines, teacher Kokoro v1.0 fp32 against the installed student, levels matched, order random per pair; `README.txt` has the texts, `answers.tsv` the form). The key is kept apart in `/run/media/jethac/Shared/tts-distil-zh-ab-key/KEY.tsv`.
+
+### Japanese: UniDic against NAIST
+
+straylight-voice branch `tts-unidic` (worktree `/home/jethac/Projects/straylight-voice-unidic`, commit `a5ad438`): the Japanese front end reads either dictionary. UniDic's features have 29 fields, the pronunciation (`pron`, the field misaki reads) is field 9, then `kana` (20); NAIST's are 8 and 7; a `*` field falls through to the surface, so 、 and 。 stay pauses with UniDic too. Counter and clock readings are unchanged. The dictionary is `STRAYLIGHT_JA_DIC`, else `DATA/unidic/` if present, else `DATA/open_jtalk_dic/` (so the tablet is unchanged).
+
+UniDic 3.1.0 (2021-08-31, the copy pip's `unidic` 1.1.0 downloads, as misaki uses) is offered under GPL-2, LGPL-2.1 or BSD-3-Clause at the user's choice (its `licenses/COPYING`); taken under **BSD-3-Clause** (copyright the UniDic Consortium). At run time it needs `sys.dic` 243 MB, `matrix.bin` 481 MB (18,551 x 20,858 connection costs), `char.bin`, `unk.dic`, `dicrc`: about 725 MB, against NAIST's 65 MB, and the tablet's root has 274 MB free.
+
+Phonemes for the 25 ja eval lines and the 8 accent minimal pairs both ways, rendered by the teacher (Kokoro v1.0 fp32, the persona blend, same seeds; `/run/media/jethac/Shared/tts-distil-unidic/`):
+
+| Front end | UTMOS | SHEET | CER (held-out) | accent pairs separated | vs Python misaki, punctuation ignored |
+| --- | --- | --- | --- | --- | --- |
+| NAIST (shipped) | 4.391 | 4.660 | 8.4 % | 0 / 4 | 9 / 23 identical, PER 2.6 % |
+| UniDic | 4.380 | 4.660 | 8.1 % | 0 / 4 | 23 / 23 identical, PER 0.0 % |
+
+- **A tie.** UTMOS 0.01 apart, CER 0.3 points apart on 23 lines (one or two characters of ASR noise), pitch accent the same (the accent strings are identical except 二本, which UniDic reads に ポン). With UniDic, our front end gives exactly misaki's phonemes apart from the kept punctuation and the brand lexicon entry (all-lines PER against misaki 5.1 % with punctuation, 7.6 % for NAIST).
+- **Readings where they differ** (the 16 lines with any difference): NAIST is wrong on 九時 (きゅうじ, twice), 七時 (ななじ), 四十分 (よんじゅうふん, twice), 通用口 (つうようこう); UniDic is wrong on 木曜日 and 水曜日 (もくようひ, すいようひ: every weekday), 四番 (よばん), 十二分, 五分, 二十五分 (ぷん), 二本 (にぽん). Others are style: UniDic writes long vowels as pronounced (ストレー, いう as ユー, 聞いて キーテ). Six clear errors each; the weekday is the most frequent word in assistant replies, the kanji clock times the next. (Numbers written in digits go through our counter rules with either dictionary; these lines spell numbers in kanji, which the dictionary reads.)
+- ASR spot checks on the teacher renders: NAIST's 午後二時半 split as ɲi ʥihaɴ was heard as 午後に自販 and its 車で as 来るまで; UniDic's 木曜日 was heard as 目標日, 水曜日 as 水用費, and its 一時間 as 位置時間.
+- **Decision: NAIST stays** (not clearly better, and 725 MB does not fit on root). UniDic support is kept for misaki-compatible phonemes (the Hugging Face card) and in case root grows (`stage-b`). Both dictionaries' kanji-numeral clock and counter errors could be fixed in the front end by extending the digit counter rules to kanji numerals; not done.
+
+### Japanese student, full stage 2
+
+So the Japanese student is the same recipe on the same (NAIST) phonemes, now with the whole stage 2: the first run's stage 2 stopped at 20,000 of 30,000 steps without its `last.pt` (the PGX pulls exclude it), so it could not be resumed; stage 2 was run again from the start (30,000 steps from stage 1's step 20,000 snapshot, which was copied to the pod; `lang-pipeline.sh` now skips stage 1 when that snapshot exists, `S2TAG=_s2b` names the run, `KD_THREADS` pins the corpus workers' threads). Pod `tts-distil-ja3`: the teacher corpus (35 shards, 4 workers, 3 threads each) in 27 min, stage 2 at 0.14 s a step.
+
+Held-out UTMOS over the new stage 2 (fp32 exports, every 2,000 steps): 3.31, 3.68, 3.98, 3.96, 4.08, 4.15, 4.17, 4.20, 4.18, 4.18 (20k), 4.23, 4.23, 4.22, 4.22, 4.22 (30k). The first run had 4.22 at 20k (fp32), so the last third of the schedule adds little: the Japanese student plateaus about 0.15 under its teacher on UTMOS, where English ends 0.1 under.
+
+| Voice | UTMOS | SHEET | CER | DTW mel L1 | LTAS diff (dB) | MFCC dist | accent pairs |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| teacher | 4.39 | 4.660 | 8.4 % | 0 | 0 | 0 | 0 / 4 |
+| installed: first run, step 20,000, MatMul uint8 | 4.22 | 4.645 | 8.0 % | 0.39 | 0.46 | 0.87 | 1 / 4 |
+| new run, step 24,000, MatMul uint8 | 4.24 | 4.648 | 8.4 % | 0.38 | 0.36 | 0.95 | |
+| new run, step 30,000, fp32 | 4.22 | 4.649 | 8.0 % | 0.29 | 0.34 | 0.92 | |
+| **new run, step 30,000, MatMul uint8 (the pick)** | **4.26** | **4.648** | **8.0 %** | 0.38 | **0.38** | **0.85** | 0 / 4 |
+
+- **The pick: step 30,000, MatMul uint8**: best UTMOS (gap to the teacher 0.13, was 0.17), SHEET gap 0.012, recognition as before and under the teacher's, timbre a little closer. A small, consistent gain, not a step change. The uint8 model is calibrated on the first 24 training-corpus lines (`quantize-narrow.py ... src/corpus/ja.phon.tsv --ops MatMul`).
+- Same graph and size as the installed voice (x25k2, 109 MB `.ort`), so tablet speed and memory are unchanged (RTF 0.54-0.57); the voice vector is the same bytes. Packed for the tablet in `work/voices/ja-alpha-v2/` (`model.ort` SHA-256 `115c7a2a…`, `voice.bin` `96be34a5…`, git-ignored); export on the PGX `~/straylight-tts/export/narrow-ja-x25k2_s2b-0030000-u8mm/`, checkpoints `paradee/ja/checkpoints/narrow_x25k2_s2b/`, pod logs `logs/pods-ja-run2/` (the first run's in `logs/pods-ja-run1/`). Not installed: replacing `/usr/local/share/straylight-listen/paradee/ja-alpha/` with it is the integrator's step.
+- Pitch accent stays the teacher's limit (its phonemes have no accent marks): the teacher separates 0 of 4 pairs, the new student 0 of 4 (the first run's 1 of 4 was within the check's noise).
+
+### Mandarin teacher: Kokoro-82M v1.1-zh
+
+`hexgrad/Kokoro-82M-v1.1-zh` (`kokoro-v1_1-zh.pth`, SHA-256 `b1d8410fa44dfb5c…`, as the card states; on the PGX in `~/straylight-tts/downloads/hexgrad-v1.1-zh/` with its 103 voices).
+
+- **Licence and data** (model card): weights Apache-2.0. Training data: "100 Chinese speakers from a professional dataset", "freely and permissively granted to us by LongMaoData" (the grant's terms are not published), plus "crowdsourced synthetic English data" (1 h each of Maple, Sol, Vale) whose source is not named; the card adds "Since this synthetic data is crowdsourced, the model trainer is not bound by any Terms of Service". v1.0's card describes its data the same way (permissive and synthetic audio), so the weights are as clean as v1.0's; the new part is a third party's grant with unpublished terms and synthetic English of undisclosed origin. Our text side of the chain is unchanged (our CC0 / public-domain text would be rendered by it).
+- **Front end**: misaki's `ZHG2P(version='1.1')` (`zh_frontend.py`: jieba with part-of-speech tags, pypinyin, PaddleSpeech's **tone sandhi** (third tone, 一, 不), erhua), output as zhuyin-like symbols with tone digits (a new vocabulary). Examples on the eval lines: 一个 ㄧ2ㄍㄜ5, 一遍 ㄧ2ㄅ言4, 一点 ㄧ4ㄉ言3, 对不起 ㄅㄨ5, 两点 ㄌ阳2ㄉ言3 (v1.0: i→pjɛ↘n, lja↓ŋtjɛ↓n). Our Rust front end is the v1.0 path; v1.1 would need a new port (tone sandhi needs jieba's POS tags; jieba-rs has them).
+- **Voices**: 103 (zf_001-zf_099 with gaps, 55 female; 45 male zm_*; af_maple, af_sol, bf_vale); af_heart and zf_xiaoni are not in it, and v1.0 voice packs do not belong to its style space, so the persona blend does not carry over. Closest to the persona (v1.0 zf_xiaoni*0.7+af_heart*0.3) over 5 lines, all 55 zf voices and some blends (`scripts/v11-voices.py`; the card's speed curve, which slows inputs over 83 phonemes because the model rushes them): zf_048 (MFCC 10.0, LTAS 4.2 dB, F0 237 Hz), zf_024 (11.1, 3.4 dB), zf_032, zf_059; best blend zf_048*0.5+zf_024*0.5 (MFCC 8.4, LTAS 3.2 dB, F0 229 Hz, the persona's is 229). For scale, the installed student is 0.67 dB / 2.2 from its teacher: every v1.1 candidate is a different voice, not the persona.
+- **25 zh eval lines** (misaki 1.1 phonemes, brand and name through our lexicon's aliases):
+
+| Teacher, voice | UTMOS | SHEET | CER (held-out) | duration vs v1.0 | LTAS / MFCC to the persona |
+| --- | --- | --- | --- | --- | --- |
+| v1.0 zf_xiaoni*0.7+af_heart*0.3 (today) | 4.23 | 4.646 | 2.9 % | 1 | 0 |
+| v1.1 zf_048*0.5+zf_024*0.5 | 4.07 | 4.652 | 0.8 % | 1.19 | 3.16 dB / 8.4 |
+| v1.1 zf_048 | 4.05 | 4.657 | 1.3 % | 1.29 | 3.94 dB / 9.9 |
+| v1.1 zf_047*0.7+af_maple*0.3 | 4.15 | 4.644 | 1.3 % | 1.06 | 2.67 dB / 14.0 |
+| v1.1 zf_001 (the card's sample voice) | 3.71 | 4.674 | 1.3 % | 1.03 | 4.52 dB / 22.6 |
+
+- **Not a clear win, so no retrain was run.** Recognition is better (CER 0.8-1.3 % against 2.9 %; tone sandhi), naturalness the same on SHEET and lower on UTMOS, and the voice is no longer the persona. Shipping it also needs the v1.1 front end ported to Rust before the student's phonemes match the device's, and the card's speed curve in the listener. The installed v1.0 student already transcribes at 1.4 %.
+- **Proposal** (for the user): if better tones are wanted, (1) port misaki's v1.1 Mandarin front end (zh_frontend + tone sandhi + erhua) to `zh.rs`; (2) choose a v1.1 voice by listening (zf_048*0.5+zf_024*0.5 is the closest measured; the persona's blend cannot be kept); (3) render the zh corpus with v1.1 and train the x25k2 student with v1.1's text side (same recipe, one 5090-class pod, about 1.5 h); (4) record LongMaoData's grant and the synthetic-English provenance on the card. Before that, the A/B set above tells whether the current student is already good enough.
+
+### misaki phonemes into the students (for the model card)
+
+Python misaki 0.9.4 phonemes (Kokoro's `KPipeline`: en `G2P` with espeak-ng fallback, ja `JAG2P` with UniDic, zh `ZHG2P` v1.0) for the raw eval texts (so the brand as misaki reads it), into the installed students and the teacher (`/run/media/jethac/Shared/tts-distil-misaki/`). Our front end's numbers for comparison (held-out lines):
+
+| | front end | teacher UTMOS / SHEET / CER | student UTMOS / SHEET / CER |
+| --- | --- | --- | --- |
+| en | ours | 4.51 / 4.575 / 4.9 % (WER 0.5 %) | 4.40 / 4.517 / 5.3 % (WER 0.8 %) |
+| en | misaki | 4.51 / 4.574 / 5.3 % (WER 0.5 %) | 4.40 / 4.516 / 5.1 % (WER 0.8 %) |
+| ja | ours (NAIST) | 4.39 / 4.660 / 8.4 % | 4.22 / 4.645 / 8.0 % |
+| ja | misaki (UniDic) | 4.35 / 4.658 / 9.6 % | 4.18 / 4.646 / 11.1 % |
+| zh | ours | 4.23 / 4.646 / 2.9 % | 3.81 / 4.624 / 1.4 % |
+| zh | misaki | 4.23 / 4.645 / 3.4 % | 3.81 / 4.625 / 2.1 % |
+
+- WER and CER of both rows re-measured together on 2026-11-04; the teacher's English WER measures 0.5 % now on the same renders that gave 1.6 % above (eval.py's English normalisation changed in between), the students' are unchanged.
+- The students take misaki's phonemes as well as the teacher does: naturalness unchanged in every language. English is the same either way. Japanese from misaki is 8 % shorter (misaki drops every 、 and 。, so no pauses) and recognised less well (11.1 % against 8.0 %; the brand line's "ai &" adds to it). Mandarin from misaki loses a little (2.1 % against 1.4 %), mostly the brand and the name spelled as letters.
+- For the card: the voices accept misaki's output directly; with our front end Japanese keeps its pauses and counter readings.
+
 ## Evaluation
 
 Lines: `cases/eval-lines.tsv`, assistant-style replies written for this (32 en, 25 ja, 25 zh); the greeting and the first brand line are also in the training corpus (ids ending `.seen`, summarised apart), all others are held out. Phonemes from the device front end (`straylight-listen --g2p` with the shipped lexicon), so the brand is read as the lexicon says (en `ˌAˌIˈæːnd`).
@@ -193,6 +296,8 @@ Fleet (2026-11-03 16:30 UTC): one pod per language, each running `scripts/lang-p
 | `tts-distil-ja` (o0eyp6mmcmzbux) | RTX A6000 48 GB, secure | 0.59 | 11-03 16:28 | 11-03 17:20 (terminated) | ja corpus from the first shard up (about 5 min a shard with 4 workers) |
 | `tts-distil-ja2` (m3krjt4k1wo7nk) | RTX 4090 24 GB, secure | 0.89 | 11-03 16:58 | 11-03 19:48 (terminated) | ja corpus from the last shard down (`KD_REVERSE=1`), shards exchanged with `tts-distil-ja` by `scripts/sync-shards.sh`; then the ja student |
 
+Second round (2026-11-04): GraphQL stock showed no RTX 5090; REST `POST /pods` with the list RTX PRO 6000 Blackwell Workstation, RTX 5090, H100 SXM, H200, RTX PRO 6000 Server, RTX 4090 (`gpuTypePriority: custom`, secure, 12+ vCPU) gave pod `tts-distil-ja3` (wqpicfxjq78xn7), **RTX PRO 6000 Blackwell Workstation Edition, $2.59/h**, 16 vCPU (13.6 CPU quota), 03:46-05:44 UTC: setup, the ja teacher corpus in 27 min (4 workers x 3 threads), stage 2 at **0.14 s a step** (the 5090 took 0.22, the outside-tenant Server Edition 0.54), 30,000 steps in 70 min. Balance $74.20 before, $69.45 after: **$4.75**. Pod deleted, no network volumes.
+
 Spend: $4.34 by 2026-11-03 16:11 UTC (balance $84.38); $5.73 by 16:35 (fleet $2.99/h); $8.27 by 17:20; $12.95 by 18:46 (English pod terminated after its run; $2.09/h for zh and ja2); **$14.51 in all** when the last pod was terminated at 19:48 (balance $74.21, no pods, no network volumes).
 
 ## The PGX
@@ -202,6 +307,8 @@ Spend: $4.34 by 2026-11-03 16:11 UTC (balance $84.38); $5.73 by 16:35 (fleet $2.
 ## Licence chain
 
 Text: CC0 and public domain only (Common Voice sentence lists, Aozora Bunko, our own assistant lines; sources recorded per sentence by `scripts/build-corpus.py`). Teacher: Kokoro-82M v1.0 and its voices (Apache-2.0), fetched from Hugging Face at the same bytes as the PGX copy. Students: Kokoro's own text-side weights (Apache-2.0) plus a decoder trained here only from the teacher's renders and internals of that text; code from Kokoro (Apache-2.0) and Paradee (Apache-2.0, training scripts only: its released weights, trained on WikiText-103 sentences under CC BY-SA 3.0, are not used). Matcha-TTS and Vocos (MIT) only in the fallback. No third-party recordings; only our corpus went to RunPod.
+
+Added 2026-11-04: UniDic 3.1.0 (BSD-3-Clause, of its GPL/LGPL/BSD choice; the UniDic Consortium), supported by the front end but not shipped. Evaluation only, in no model: SHEET (`unilight/sheet` v0.1.0, MIT; its released `all7` checkpoint) with s3prl 0.4.18 (Apache-2.0), h5py (BSD), humanfriendly (MIT), prettytable (BSD); DNSMOS (Microsoft DNS-Challenge, CC BY 4.0) was downloaded to `/run/media/jethac/Shared/tts-distil-downloads/dnsmos/` and not used. Kokoro-82M-v1.1-zh (Apache-2.0; data terms above) only evaluated.
 
 ## Left on the device
 

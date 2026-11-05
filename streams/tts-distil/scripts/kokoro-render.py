@@ -3,7 +3,7 @@
 end's phonemes, as the tablet would say it: the same phoneme string, the
 same style row (pack[n_tokens - 1]) of the same voice blend, speed 1.
 
-    kokoro-render.py KOKORO_DIR PHON.tsv VOICE OUTDIR [--shard I/N] [--reverse]
+    kokoro-render.py KOKORO_DIR PHON.tsv VOICE OUTDIR [--shard I/N] [--reverse] [--v11]
 
 PHON.tsv is `straylight-listen --g2p` output (id, lang, phonemes, ms).
 VOICE is a name or blend "jf_alpha*0.7+af_heart*0.3".
@@ -11,6 +11,9 @@ Writes OUTDIR/wav24/<id>.flac (24 kHz, PCM 16), OUTDIR/dur/<id>.npy (Kokoro's
 per-token durations in 600-sample frames, the two pads included) and
 OUTDIR/render-<shard>.tsv (id, seconds, tokens, phonemes).
 Lines that are already rendered are skipped, so it can be restarted.
+--v11: Kokoro-82M-v1.1-zh (kokoro-v1_1-zh.pth in KOKORO_DIR, its own
+vocabulary) at the speed its model card's sample uses (1.1 up to 83
+phonemes, then slower, to 0.88 from 183: the model rushes long inputs).
 """
 import os, sys, time, zlib
 import numpy as np
@@ -38,7 +41,7 @@ def main():
     os.makedirs(os.path.join(out, "wav24"), exist_ok=True)
     os.makedirs(os.path.join(out, "dur"), exist_ok=True)
     dev = "cuda" if torch.cuda.is_available() else "cpu"
-    model = KModel(config=os.path.join(kdir, "config.json"), model=os.path.join(kdir, "kokoro-v1_0.pth")).to(dev).eval()
+    model = KModel(config=os.path.join(kdir, "config.json"), model=os.path.join(kdir, "kokoro-v1_1-zh.pth" if "--v11" in sys.argv else "kokoro-v1_0.pth")).to(dev).eval()
     pack = voice_pack(kdir, voice).to(dev)
     vocab = model.vocab
     log = open(os.path.join(out, f"render-{shard}{'r' if '--reverse' in sys.argv else ''}.tsv"), "a", encoding="utf-8")
@@ -61,7 +64,11 @@ def main():
         torch.manual_seed(zlib.crc32(uid.encode()))
         x = torch.LongTensor([[0, *ids, 0]]).to(dev)
         with torch.no_grad():
-            audio, dur = model.forward_with_tokens(x, ref, 1.0)
+            sp = 1.0
+            if "--v11" in sys.argv:
+                n = len(ids)
+                sp = 1.1 * (1 if n <= 83 else 1 - (n - 83) / 500 if n < 183 else 0.8)
+            audio, dur = model.forward_with_tokens(x, ref, sp)
         a = audio.float().cpu().numpy()
         np.save(os.path.join(out, "dur", f"{uid}.npy"), dur.cpu().numpy().astype(np.int16))
         sf.write(wav, a, 24000, subtype="PCM_16")
